@@ -1,0 +1,232 @@
+@import "tailwindcss" source(none);
+@source "../src";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/*
+ * SmrkoMed Patient Portal Design System
+ * Semantic tokens matching SmrkoMed core aesthetics
+ */
+
+@theme inline {
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --radius-2xl: calc(var(--radius) + 8px);
+  --radius-3xl: calc(var(--radius) + 12px);
+  --radius-4xl: calc(var(--radius) + 16px);
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-soft: var(--primary-soft);
+  --color-brand: var(--brand);
+  --color-brand-dark: var(--brand-dark);
+  --color-brand-soft: var(--brand-soft);
+  --color-lavender: var(--lavender);
+  --color-lavender-soft: var(--lavender-soft);
+  --color-peach: var(--peach);
+  --color-peach-soft: var(--peach-soft);
+  --color-ink: var(--ink);
+  --color-ink-soft: var(--ink-soft);
+  --color-blue-accent: var(--blue-accent);
+  --color-blue-soft: var(--blue-soft);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-soft: var(--success-soft);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-soft: var(--warning-soft);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-soft: var(--danger-soft);
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-soft: var(--info-soft);
+  --color-purple: var(--purple);
+  --color-purple-foreground: var(--purple-foreground);
+  --color-purple-soft: var(--purple-soft);
+  --color-teal: var(--teal);
+  --color-teal-foreground: var(--teal-foreground);
+  --color-teal-soft: var(--teal-soft);
+  --color-amber: var(--amber);
+  --color-amber-soft: var(--amber-soft);
+  --color-rose: var(--rose-color);
+  --color-rose-foreground: var(--rose-foreground);
+  --color-rose-soft: var(--rose-soft);
+  --color-cream: var(--cream);
+  --color-loop: var(--loop);
+  --color-loop-foreground: var(--loop-foreground);
+
+  --shadow-soft: 0 10px 30px -12px rgb(123 79 224 / 0.18);
+  --shadow-card: 0 4px 20px -6px rgb(31 24 48 / 0.06);
+  --shadow-lift: 0 20px 40px -16px rgb(123 79 224 / 0.25);
+  --shadow-dock: 0 -4px 24px -2px rgb(31 24 48 / 0.08);
+
+  --animate-pulse-subtle: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  --animate-float: float 4s ease-in-out infinite;
+  --animate-scale-in: scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+  --animate-wave-bar: wave-bar 1.2s ease-in-out infinite alternate;
+  --animate-glow: glow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes wave-bar {
+  0% { transform: scaleY(0.2); }
+  50% { transform: scaleY(1); }
+  100% { transform: scaleY(0.3); }
+}
+
+@keyframes glow-pulse {
+  0%, 100% { box-shadow: 0 0 20px -5px rgba(123, 79, 224, 0.4); }
+  50% { box-shadow: 0 0 35px 2px rgba(123, 79, 224, 0.7); }
+}
+
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.02); }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+:root {
+  --radius: 0.875rem;
+
+  /* Brand — SMRKOMED signature plum */
+  --brand: #7b4fe0;
+  --brand-dark: #5b35b8;
+  --brand-soft: #efe8fb;
+  --blue-accent: #6b8fd6;
+  --blue-soft: #e8eefb;
+  --ink: #1f1830;
+  --ink-soft: #6d6680;
+  --peach: #e8b8a0;
+  --peach-soft: #f7ebe4;
+  --rose-color: #c47ad4;
+  --rose-foreground: #ffffff;
+  --rose-soft: #f5e8f9;
+  --lavender: #f0ebfa;
+  --lavender-soft: #f8f5fc;
+  --cream: #fbf9fe;
+
+  --background: #f8f5fc;
+  --foreground: #1f1830;
+  --card: #ffffff;
+  --card-foreground: #1f1830;
+  --popover: #ffffff;
+  --popover-foreground: #1f1830;
+
+  --primary: #7b4fe0;
+  --primary-foreground: #ffffff;
+  --primary-soft: #efe8fb;
+
+  --secondary: #f0ebfa;
+  --secondary-foreground: #5b35b8;
+  --muted: #f0ebfa;
+  --muted-foreground: #6d6680;
+  --accent: #e8eefb;
+  --accent-foreground: #3d4f8a;
+
+  --destructive: #d94b62;
+  --destructive-foreground: #fff9f7;
+
+  --border: rgb(123 79 224 / 0.14);
+  --input: rgb(123 79 224 / 0.18);
+  --ring: rgb(123 79 224 / 0.35);
+
+  --success: #3e9b68;
+  --success-foreground: #ffffff;
+  --success-soft: #e6f4ec;
+  --warning: #d69a35;
+  --warning-foreground: #5a4113;
+  --warning-soft: #fbf1de;
+  --danger: #d94b62;
+  --danger-foreground: #fff9f7;
+  --danger-soft: #fbe6e9;
+  --info: #7b4fe0;
+  --info-foreground: #ffffff;
+  --info-soft: #efe8fb;
+  --purple: #8b63e8;
+  --purple-foreground: #ffffff;
+  --purple-soft: #efe8fb;
+  --teal: #5a8f9e;
+  --teal-foreground: #f4fbfb;
+  --teal-soft: #e4f1f2;
+  --amber: #d69a35;
+  --amber-soft: #fbf1de;
+  --loop: #7b4fe0;
+  --loop-foreground: #ffffff;
+}
+
+/* Native-app touch & scroll behavior */
+html {
+  -webkit-tap-highlight-color: transparent;
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  min-height: 100dvh;
+  margin: 0;
+  padding: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgb(123 79 224 / 0.18);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(123 79 224 / 0.35);
+}
+
+/* Safe area insets for mobile PWAs */
+.safe-top {
+  padding-top: env(safe-area-inset-top, 0px);
+}
+
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
