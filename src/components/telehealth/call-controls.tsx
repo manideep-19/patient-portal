@@ -41,16 +41,16 @@ export function CallControls({
   onEndCall,
 }: CallControlsProps) {
   return (
-    <div className="w-full p-4 pb-6 bg-gradient-to-t from-black via-black/85 to-transparent flex items-center justify-center safe-bottom pointer-events-auto select-none">
-      <div className="flex items-center gap-2 sm:gap-3.5 p-2 px-3 sm:px-4 rounded-full bg-slate-950/85 border border-white/20 backdrop-blur-2xl shadow-2xl">
+    <div className="w-full p-2 sm:p-4 pb-4 sm:pb-6 bg-gradient-to-t from-black via-black/85 to-transparent flex items-center justify-center safe-bottom pointer-events-auto select-none">
+      <div className="flex items-center gap-1.5 sm:gap-3 p-1.5 sm:p-2 px-2.5 sm:px-4 rounded-full bg-slate-950/90 border border-white/20 backdrop-blur-2xl shadow-2xl max-w-[96vw] overflow-x-auto scrollbar-none">
         {/* Mic Toggle */}
         <ControlButton
           active={isMicMuted}
           icon={
             isMicMuted ? (
-              <MicOff className="w-5 h-5 text-white" />
+              <MicOff className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-white" />
             ) : (
-              <Mic className="w-5 h-5 text-emerald-400" />
+              <Mic className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-emerald-400" />
             )
           }
           label="Toggle Microphone"
@@ -64,9 +64,9 @@ export function CallControls({
           active={isCamOff}
           icon={
             isCamOff ? (
-              <VideoOff className="w-5 h-5 text-white" />
+              <VideoOff className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-white" />
             ) : (
-              <Video className="w-5 h-5 text-emerald-400" />
+              <Video className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-emerald-400" />
             )
           }
           label="Toggle Camera"
@@ -80,9 +80,9 @@ export function CallControls({
           active={isScreenSharing}
           icon={
             isScreenSharing ? (
-              <MonitorOff className="w-5 h-5 text-ink" />
+              <MonitorOff className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-ink" />
             ) : (
-              <MonitorUp className="w-5 h-5 text-white/90" />
+              <MonitorUp className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-white/90" />
             )
           }
           label="Screen Share"
@@ -94,7 +94,7 @@ export function CallControls({
         {/* Switch Camera */}
         <ControlButton
           active={false}
-          icon={<SwitchCamera className="w-5 h-5 text-white/90" />}
+          icon={<SwitchCamera className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-white/90" />}
           label="Switch Camera"
           title="Switch Camera (Front/Rear)"
           onClick={onSwitchCamera}
@@ -104,30 +104,30 @@ export function CallControls({
         <div className="relative">
           <ControlButton
             active={isChatOpen}
-            icon={<MessageSquare className="w-5 h-5" />}
+            icon={<MessageSquare className="w-4.5 h-4.5 sm:w-5 sm:h-5" />}
             label="Toggle Chat"
             title={isChatOpen ? "Close In-Call Chat" : "Open In-Call Chat"}
             onClick={onToggleChat}
             activeClass="bg-brand text-white shadow-soft"
           />
           {unreadChatCount > 0 && !isChatOpen && (
-            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 bg-destructive text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse border-2 border-slate-950">
+            <span className="absolute -top-1 -right-1 min-w-[18px] sm:min-w-[20px] h-4.5 sm:h-5 px-1 bg-destructive text-white text-[9px] sm:text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse border-2 border-slate-950">
               {unreadChatCount > 9 ? "9+" : unreadChatCount}
             </span>
           )}
         </div>
 
         {/* Divider */}
-        <div className="w-[1px] h-7 bg-white/20 mx-0.5 sm:mx-1" />
+        <div className="w-[1px] h-6 sm:h-7 bg-white/20 mx-0.5" />
 
         {/* End Call Button */}
         <button
           onClick={onEndCall}
-          className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-destructive text-white flex items-center justify-center shadow-lift hover:bg-destructive/90 transition-all cursor-pointer active:scale-95 group"
+          className="w-10 h-10 sm:w-12 sm:h-12 rounded-full bg-destructive text-white flex items-center justify-center shadow-lift hover:bg-destructive/90 transition-all cursor-pointer active:scale-95 group shrink-0"
           aria-label="End Consultation"
           title="End Consultation"
         >
-          <PhoneOff className="w-5 h-5 group-hover:scale-110 transition-transform" />
+          <PhoneOff className="w-4.5 h-4.5 sm:w-5 sm:h-5 group-hover:scale-110 transition-transform" />
         </button>
       </div>
     </div>
@@ -157,7 +157,7 @@ function ControlButton({
     <button
       onClick={onClick}
       title={title || label}
-      className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+      className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 ${
         active
           ? activeClass
           : "bg-white/15 text-white hover:bg-white/25 active:scale-95 border border-white/10"

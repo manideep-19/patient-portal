@@ -68,12 +68,14 @@ export interface UseWebRTCReturn {
   peerId: string | null;
   remotePeerId: string | null;
   error: string | null;
+  facingMode: "user" | "environment";
 
   startLocalMedia: (video?: boolean, audio?: boolean) => Promise<void>;
   stopLocalMedia: () => void;
   connectToPeer: (remotePeerId: string) => void;
   toggleMic: () => void;
   toggleCamera: () => void;
+  switchCamera: () => Promise<void>;
   toggleScreenShare: () => Promise<void>;
   sendChatMessage: (text: string) => void;
   sendTypingIndicator: (isTyping: boolean) => void;
@@ -126,6 +128,10 @@ export function useWebRTC(
   // Peer info
   const [peerId, setPeerId] = useState<string | null>(null);
   const [remotePeerId, setRemotePeerId] = useState<string | null>(null);
+
+  // Camera facing mode (front / rear for mobile devices)
+  const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
+  const facingModeRef = useRef<"user" | "environment">("user");
 
   // Refs for cleanup
   const peerRef = useRef<Peer | null>(null);
@@ -517,6 +523,54 @@ export function useWebRTC(
   }, []);
 
   /* ---------------------------------------------------------------- */
+  /*  Switch Camera (Front / Rear on mobile & tablets)                 */
+  /* ---------------------------------------------------------------- */
+
+  const switchCamera = useCallback(async () => {
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getUserMedia) return;
+    const nextMode = facingModeRef.current === "user" ? "environment" : "user";
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: nextMode },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+        },
+        audio: false,
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      if (!newVideoTrack) return;
+
+      if (localStreamRef.current) {
+        const oldTrack = localStreamRef.current.getVideoTracks()[0];
+        if (oldTrack) {
+          localStreamRef.current.removeTrack(oldTrack);
+          oldTrack.stop();
+        }
+        localStreamRef.current.addTrack(newVideoTrack);
+
+        if (mediaConnRef.current) {
+          const sender = (mediaConnRef.current as any).peerConnection
+            ?.getSenders()
+            ?.find((s: RTCRtpSender) => s.track?.kind === "video");
+          if (sender) {
+            await sender.replaceTrack(newVideoTrack);
+          }
+        }
+
+        setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
+      }
+
+      facingModeRef.current = nextMode;
+      setFacingMode(nextMode);
+    } catch (err: any) {
+      console.warn("[switchCamera] Failed to switch camera:", err);
+      throw err;
+    }
+  }, []);
+
+  /* ---------------------------------------------------------------- */
   /*  Screen sharing                                                   */
   /* ---------------------------------------------------------------- */
 
@@ -541,6 +595,10 @@ export function useWebRTC(
       }
       setIsScreenSharing(false);
       return;
+    }
+
+    if (typeof navigator === "undefined" || !navigator.mediaDevices?.getDisplayMedia) {
+      throw new Error("Screen sharing is not supported on mobile browsers (supported on desktop Chrome, Edge, Safari, Firefox).");
     }
 
     try {
@@ -573,8 +631,11 @@ export function useWebRTC(
       };
 
       setIsScreenSharing(true);
-    } catch {
-      // User cancelled
+    } catch (err: any) {
+      // User cancelled or browser rejected
+      if (err?.name !== "NotAllowedError") {
+        throw err;
+      }
     }
   }, [isScreenSharing]);
 
@@ -743,11 +804,13 @@ export function useWebRTC(
     peerId,
     remotePeerId,
     error,
+    facingMode,
     startLocalMedia,
     stopLocalMedia,
     connectToPeer,
     toggleMic,
     toggleCamera,
+    switchCamera,
     toggleScreenShare,
     sendChatMessage,
     sendTypingIndicator,

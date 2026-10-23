@@ -183,9 +183,27 @@ export default function TelehealthRoomPage({ params }: PageProps) {
     }
   };
 
-  // Handle camera switch
+  // Handle camera switch (front/back camera on phones and tablets)
   const handleSwitchCamera = async () => {
-    toast.info("Camera view switched");
+    try {
+      await rtc.switchCamera();
+      toast.info(
+        `Switched to ${rtc.facingMode === "user" ? "rear" : "front"} camera`
+      );
+    } catch {
+      toast.info("Camera view switched");
+    }
+  };
+
+  // Handle screen share with mobile device fallback
+  const handleToggleScreenShare = async () => {
+    try {
+      await rtc.toggleScreenShare();
+    } catch (err: any) {
+      toast.error(
+        err?.message || "Screen sharing is not supported on this device"
+      );
+    }
   };
 
   // -----------------------------------------------------------------
@@ -257,7 +275,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               <VideoPlayer
                 stream={rtc.localStream}
                 muted
-                mirror
+                mirror={rtc.facingMode === "user"}
                 className="w-full h-full"
                 label={`${patient.name} (You)`}
                 objectFit="cover"
@@ -629,7 +647,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
           <VideoPlayer
             stream={rtc.localStream}
             muted
-            mirror
+            mirror={rtc.facingMode === "user"}
             className="w-full h-full"
             label="You"
             objectFit="cover"
@@ -685,7 +703,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
           unreadChatCount={unreadChatCount}
           onToggleMic={rtc.toggleMic}
           onToggleCamera={rtc.toggleCamera}
-          onToggleScreenShare={rtc.toggleScreenShare}
+          onToggleScreenShare={handleToggleScreenShare}
           onToggleChat={() => {
             const next = !isChatOpen;
             setIsChatOpen(next);
