@@ -41,72 +41,95 @@ export function CallControls({
   onEndCall,
 }: CallControlsProps) {
   return (
-    <div className="relative z-20 p-4 pb-6 bg-gradient-to-t from-black via-black/80 to-transparent flex items-center justify-center gap-3 sm:gap-4 safe-bottom">
-      {/* Mic Toggle */}
-      <ControlButton
-        active={isMicMuted}
-        icon={isMicMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
-        label="Toggle Microphone"
-        onClick={onToggleMic}
-        activeClass="bg-destructive text-white shadow-soft"
-      />
-
-      {/* Camera Toggle */}
-      <ControlButton
-        active={isCamOff}
-        icon={isCamOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
-        label="Toggle Camera"
-        onClick={onToggleCamera}
-        activeClass="bg-destructive text-white shadow-soft"
-      />
-
-      {/* Screen Share */}
-      <ControlButton
-        active={isScreenSharing}
-        icon={
-          isScreenSharing ? (
-            <MonitorOff className="w-5 h-5" />
-          ) : (
-            <MonitorUp className="w-5 h-5" />
-          )
-        }
-        label="Screen Share"
-        onClick={onToggleScreenShare}
-        activeClass="bg-amber-500 text-ink"
-      />
-
-      {/* Switch Camera */}
-      <ControlButton
-        active={false}
-        icon={<SwitchCamera className="w-5 h-5" />}
-        label="Switch Camera"
-        onClick={onSwitchCamera}
-      />
-
-      {/* Chat Toggle */}
-      <div className="relative">
+    <div className="w-full p-4 pb-6 bg-gradient-to-t from-black via-black/85 to-transparent flex items-center justify-center safe-bottom pointer-events-auto select-none">
+      <div className="flex items-center gap-2 sm:gap-3.5 p-2 px-3 sm:px-4 rounded-full bg-slate-950/85 border border-white/20 backdrop-blur-2xl shadow-2xl">
+        {/* Mic Toggle */}
         <ControlButton
-          active={isChatOpen}
-          icon={<MessageSquare className="w-5 h-5" />}
-          label="Toggle Chat"
-          onClick={onToggleChat}
-          activeClass="bg-brand text-white"
+          active={isMicMuted}
+          icon={
+            isMicMuted ? (
+              <MicOff className="w-5 h-5 text-white" />
+            ) : (
+              <Mic className="w-5 h-5 text-emerald-400" />
+            )
+          }
+          label="Toggle Microphone"
+          title={isMicMuted ? "Microphone Muted (Click to Unmute)" : "Microphone Active (Click to Mute)"}
+          onClick={onToggleMic}
+          activeClass="bg-destructive text-white shadow-soft ring-2 ring-destructive/40"
         />
-        {unreadChatCount > 0 && !isChatOpen && (
-          <span className="absolute -top-1 -right-1 w-5 h-5 bg-destructive text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
-            {unreadChatCount > 9 ? "9+" : unreadChatCount}
-          </span>
-        )}
-      </div>
 
-      {/* End Call Button */}
-      <button
-        onClick={onEndCall}
-        className="w-13 h-13 rounded-full bg-destructive text-white flex items-center justify-center shadow-lift hover:bg-destructive/90 transition-all cursor-pointer active:scale-95 ml-2"
-        aria-label="End Consultation"
-      >
-        <PhoneOff className="w-6 h-6" />
-      </button>
+        {/* Camera Toggle */}
+        <ControlButton
+          active={isCamOff}
+          icon={
+            isCamOff ? (
+              <VideoOff className="w-5 h-5 text-white" />
+            ) : (
+              <Video className="w-5 h-5 text-emerald-400" />
+            )
+          }
+          label="Toggle Camera"
+          title={isCamOff ? "Camera Switched Off (Click to Turn On)" : "Camera Active (Click to Turn Off)"}
+          onClick={onToggleCamera}
+          activeClass="bg-destructive text-white shadow-soft ring-2 ring-destructive/40"
+        />
+
+        {/* Screen Share */}
+        <ControlButton
+          active={isScreenSharing}
+          icon={
+            isScreenSharing ? (
+              <MonitorOff className="w-5 h-5 text-ink" />
+            ) : (
+              <MonitorUp className="w-5 h-5 text-white/90" />
+            )
+          }
+          label="Screen Share"
+          title={isScreenSharing ? "Sharing Screen (Click to Stop)" : "Share Your Screen"}
+          onClick={onToggleScreenShare}
+          activeClass="bg-amber-400 text-ink shadow-soft"
+        />
+
+        {/* Switch Camera */}
+        <ControlButton
+          active={false}
+          icon={<SwitchCamera className="w-5 h-5 text-white/90" />}
+          label="Switch Camera"
+          title="Switch Camera (Front/Rear)"
+          onClick={onSwitchCamera}
+        />
+
+        {/* Chat Toggle */}
+        <div className="relative">
+          <ControlButton
+            active={isChatOpen}
+            icon={<MessageSquare className="w-5 h-5" />}
+            label="Toggle Chat"
+            title={isChatOpen ? "Close In-Call Chat" : "Open In-Call Chat"}
+            onClick={onToggleChat}
+            activeClass="bg-brand text-white shadow-soft"
+          />
+          {unreadChatCount > 0 && !isChatOpen && (
+            <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 bg-destructive text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse border-2 border-slate-950">
+              {unreadChatCount > 9 ? "9+" : unreadChatCount}
+            </span>
+          )}
+        </div>
+
+        {/* Divider */}
+        <div className="w-[1px] h-7 bg-white/20 mx-0.5 sm:mx-1" />
+
+        {/* End Call Button */}
+        <button
+          onClick={onEndCall}
+          className="w-11 h-11 sm:w-12 sm:h-12 rounded-full bg-destructive text-white flex items-center justify-center shadow-lift hover:bg-destructive/90 transition-all cursor-pointer active:scale-95 group"
+          aria-label="End Consultation"
+          title="End Consultation"
+        >
+          <PhoneOff className="w-5 h-5 group-hover:scale-110 transition-transform" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -119,20 +142,25 @@ function ControlButton({
   active,
   icon,
   label,
+  title,
   onClick,
   activeClass = "bg-brand text-white",
 }: {
   active: boolean;
   icon: React.ReactNode;
   label: string;
+  title?: string;
   onClick: () => void;
   activeClass?: string;
 }) {
   return (
     <button
       onClick={onClick}
-      className={`w-12 h-12 rounded-full flex items-center justify-center transition-all cursor-pointer ${
-        active ? activeClass : "bg-white/20 text-white hover:bg-white/30"
+      title={title || label}
+      className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+        active
+          ? activeClass
+          : "bg-white/15 text-white hover:bg-white/25 active:scale-95 border border-white/10"
       }`}
       aria-label={label}
     >
