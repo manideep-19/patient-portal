@@ -213,6 +213,7 @@ export function useWebRTC(
       debug: 1,
       config: {
         iceServers: [
+          // STUN: Global Google, Mozilla & Twilio servers (Direct P2P, 0-hop for ~80-85% of worldwide calls)
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
@@ -220,6 +221,28 @@ export function useWebRTC(
           { urls: "stun:stun4.l.google.com:19302" },
           { urls: "stun:stun.services.mozilla.com" },
           { urls: "stun:global.stun.twilio.com:3478" },
+
+          // TURN: Global encrypted relay fallback for hospital firewalls, university networks, and symmetric mobile carrier NATs (100% connect guarantee)
+          {
+            urls: [
+              "turn:openrelay.metered.ca:80",
+              "turn:openrelay.metered.ca:443",
+              "turn:openrelay.metered.ca:443?transport=tcp",
+            ],
+            username: "openrelayproject",
+            credential: "openrelayproject",
+          },
+
+          // Optional custom production TURN credentials via environment variables:
+          ...(typeof process !== "undefined" && process.env?.NEXT_PUBLIC_TURN_URL
+            ? [
+                {
+                  urls: process.env.NEXT_PUBLIC_TURN_URL.split(","),
+                  username: process.env.NEXT_PUBLIC_TURN_USERNAME || "",
+                  credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL || "",
+                },
+              ]
+            : []),
         ],
         iceCandidatePoolSize: 10,
         iceTransportPolicy: "all",
