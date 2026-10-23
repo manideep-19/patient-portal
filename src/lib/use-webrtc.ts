@@ -213,25 +213,14 @@ export function useWebRTC(
       debug: 1,
       config: {
         iceServers: [
-          // STUN: Global Google, Mozilla & Twilio servers (Direct P2P, 0-hop for ~80-85% of worldwide calls)
+          // STUN: Fast, reliable global Google & Twilio STUN cluster
           { urls: "stun:stun.l.google.com:19302" },
           { urls: "stun:stun1.l.google.com:19302" },
           { urls: "stun:stun2.l.google.com:19302" },
           { urls: "stun:stun3.l.google.com:19302" },
           { urls: "stun:stun4.l.google.com:19302" },
-          { urls: "stun:stun.services.mozilla.com" },
           { urls: "stun:global.stun.twilio.com:3478" },
-
-          // TURN: Global encrypted relay fallback for hospital firewalls, university networks, and symmetric mobile carrier NATs (100% connect guarantee)
-          {
-            urls: [
-              "turn:openrelay.metered.ca:80",
-              "turn:openrelay.metered.ca:443",
-              "turn:openrelay.metered.ca:443?transport=tcp",
-            ],
-            username: "openrelayproject",
-            credential: "openrelayproject",
-          },
+          { urls: "stun:stun.services.mozilla.com" },
 
           // Optional custom production TURN credentials via environment variables:
           ...(typeof process !== "undefined" && process.env?.NEXT_PUBLIC_TURN_URL
@@ -422,43 +411,20 @@ export function useWebRTC(
             disconnectGraceTimeoutRef.current = null;
           }
         } else if (ice === "disconnected") {
-          console.warn("[WebRTC] ICE temporarily disconnected; triggering active recovery...");
-          setConnectionState("reconnecting");
-          // Active recovery: restart ICE to recover media stream immediately
-          if (pc.restartIce) {
-            try {
-              pc.restartIce();
-            } catch (err) {
-              console.log("[WebRTC] restartIce notice:", err);
-            }
-          }
+          console.warn("[WebRTC] ICE temporarily disconnected, allowing candidate recovery...");
           if (!disconnectGraceTimeoutRef.current) {
             disconnectGraceTimeoutRef.current = setTimeout(() => {
               if (
                 pc.iceConnectionState === "disconnected" ||
                 pc.iceConnectionState === "failed"
               ) {
-                // If connection remains disconnected, attempt auto-reconnect
-                const targetId =
-                  call.peer ||
-                  options.targetPeerId ||
-                  `smrko-${sanitizeId(roomId)}-${role === "doctor" ? "patient" : "doctor"}`;
-                if (peerRef.current && !peerRef.current.destroyed) {
-                  console.log("[WebRTC] Reconnecting to peer:", targetId);
-                  connectToPeer(targetId);
-                }
+                setConnectionState("reconnecting");
               }
-            }, 8000);
+            }, 3500);
           }
         } else if (ice === "failed") {
-          console.warn("[WebRTC] ICE failed, attempting restart...");
-          if (pc.restartIce) {
-            try {
-              pc.restartIce();
-            } catch (err) {
-              console.log("[WebRTC] restartIce error:", err);
-            }
-          }
+          console.warn("[WebRTC] ICE failed");
+          setConnectionState("reconnecting");
         }
       };
     }
@@ -870,17 +836,15 @@ export function useWebRTC(
   /* ---------------------------------------------------------------- */
 
   const restartConnection = useCallback(() => {
-    console.log("[WebRTC] Manual restartConnection triggered...");
+    console.log("[WebRTC] Clean reconnect triggered...");
     setConnectionState("reconnecting");
     if (mediaConnRef.current) {
-      const pc = (mediaConnRef.current as any).peerConnection as RTCPeerConnection | undefined;
-      if (pc && pc.restartIce) {
-        try {
-          pc.restartIce();
-        } catch (e) {
-          console.warn("[restartConnection error]", e);
-        }
+      try {
+        mediaConnRef.current.close();
+      } catch (e) {
+        console.warn("[restartConnection] Error closing old mediaConn:", e);
       }
+      mediaConnRef.current = null;
     }
     const targetId =
       remotePeerId ||
@@ -889,7 +853,7 @@ export function useWebRTC(
     if (targetId && peerRef.current && !peerRef.current.destroyed) {
       setTimeout(() => {
         connectToPeer(targetId);
-      }, 300);
+      }, 400);
     }
   }, [remotePeerId, options.targetPeerId, roomId, role, connectToPeer]);
 

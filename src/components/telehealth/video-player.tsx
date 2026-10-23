@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
-import { VideoOff, RefreshCw, Volume2 } from "lucide-react";
+import { VideoOff, VolumeX, Volume2 } from "lucide-react";
 
 interface VideoPlayerProps {
   stream: MediaStream | null;
@@ -29,8 +29,7 @@ export function VideoPlayer({
   onClick,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isStalled, setIsStalled] = useState(false);
+  const [needUnmute, setNeedUnmute] = useState(false);
 
   const safePlay = useCallback(() => {
     const video = videoRef.current;
@@ -40,15 +39,27 @@ export function VideoPlayer({
     if (playPromise !== undefined) {
       playPromise
         .then(() => {
-          setIsPlaying(true);
-          setIsStalled(false);
+          // Playback started successfully
         })
         .catch((err) => {
-          console.log("[VideoPlayer] Autoplay notice:", err.message);
-          setIsStalled(true);
+          console.warn("[VideoPlayer] Autoplay policy blocked audio:", err.message);
+          // If unmuted playback was blocked by browser policy, play muted and let user tap to enable sound
+          if (!video.muted) {
+            video.muted = true;
+            setNeedUnmute(true);
+            video.play().catch(() => {});
+          }
         });
     }
   }, []);
+
+  const handleUserUnmute = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = muted;
+    setNeedUnmute(false);
+    video.play().catch(() => {});
+  }, [muted]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -60,30 +71,17 @@ export function VideoPlayer({
 
     safePlay();
 
-    // Listen to video element lifecycle events
-    const handlePlaying = () => {
-      setIsPlaying(true);
-      setIsStalled(false);
-    };
-
-    const handleStalledOrWaiting = () => {
-      setIsStalled(true);
+    // Listen to video element metadata and canplay events
+    const handleCanPlay = () => {
       safePlay();
     };
 
-    const handleLoadedMetadata = () => {
-      safePlay();
-    };
+    video.addEventListener("loadedmetadata", handleCanPlay);
+    video.addEventListener("canplay", handleCanPlay);
 
-    video.addEventListener("playing", handlePlaying);
-    video.addEventListener("waiting", handleStalledOrWaiting);
-    video.addEventListener("stalled", handleStalledOrWaiting);
-    video.addEventListener("loadedmetadata", handleLoadedMetadata);
-
-    // Listen to stream tracks becoming unmuted (critical when other person turns camera back on)
+    // Listen to stream tracks becoming unmuted
     const videoTracks = stream.getVideoTracks();
     const handleTrackUnmute = () => {
-      console.log("[VideoPlayer] Video track unmuted, resuming playback...");
       safePlay();
     };
 
@@ -101,10 +99,8 @@ export function VideoPlayer({
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      video.removeEventListener("playing", handlePlaying);
-      video.removeEventListener("waiting", handleStalledOrWaiting);
-      video.removeEventListener("stalled", handleStalledOrWaiting);
-      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      video.removeEventListener("loadedmetadata", handleCanPlay);
+      video.removeEventListener("canplay", handleCanPlay);
       videoTracks.forEach((track) => {
         track.removeEventListener("unmute", handleTrackUnmute);
       });
@@ -157,7 +153,15 @@ export function VideoPlayer({
   }
 
   return (
-    <div className={`relative overflow-hidden ${className}`} onClick={onClick}>
+    <div
+      className={`relative overflow-hidden ${className}`}
+      onClick={(e) => {
+        if (needUnmute) {
+          handleUserUnmute();
+        }
+        onClick?.();
+      }}
+    >
       <video
         ref={videoRef}
         autoPlay
@@ -168,21 +172,18 @@ export function VideoPlayer({
         }`}
       />
 
-      {/* Tap to Resume / Play overlay if video was paused by browser policy */}
-      {isStalled && (
-        <div
+      {/* Floating Pill if browser autoplay required audio to start muted */}
+      {needUnmute && (
+        <button
           onClick={(e) => {
             e.stopPropagation();
-            safePlay();
-            onRetry?.();
+            handleUserUnmute();
           }}
-          className="absolute inset-0 z-20 bg-black/50 backdrop-blur-xs flex flex-col items-center justify-center gap-2 cursor-pointer text-white animate-in fade-in"
+          className="absolute top-20 left-1/2 -translate-x-1/2 z-20 px-3.5 py-1.5 rounded-full bg-slate-900/90 text-white border border-brand/40 shadow-2xl backdrop-blur-md text-xs font-semibold flex items-center gap-2 hover:bg-slate-800 transition-all cursor-pointer animate-pulse"
         >
-          <div className="p-3 rounded-full bg-brand/90 hover:bg-brand text-white shadow-lift transition-transform hover:scale-105">
-            <RefreshCw className="w-6 h-6" />
-          </div>
-          <span className="text-xs font-semibold">Video paused • Click to resume</span>
-        </div>
+          <VolumeX className="w-4 h-4 text-amber-400" />
+          <span>Click to Unmute Audio</span>
+        </button>
       )}
 
       {showLabel && label && (
