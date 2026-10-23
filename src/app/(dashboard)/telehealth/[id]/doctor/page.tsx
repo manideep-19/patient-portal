@@ -280,9 +280,10 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
             {rtc.remotePeers.length > 0 ? (
               <VideoGrid
                 localStream={rtc.localStream}
-                localLabel="Dr. Sharma"
+                localLabel="Dr. Sunita Sharma"
                 localMirror={false}
                 localCamOff={rtc.isCamOff}
+                localMicMuted={rtc.isMicMuted}
                 remotePeers={rtc.remotePeers}
                 onRetry={rtc.restartConnection}
                 className="w-full h-full"
@@ -330,27 +331,6 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                     Open Patient Tab
                   </a>
                 </div>
-              </div>
-            )}
-
-            {/* Doctor Self-Preview PiP — only rendered when exactly 1 remote is connected (2-person mode) */}
-            {rtc.remotePeers.length === 1 && (
-              <div className="absolute bottom-20 right-4 z-20 w-36 sm:w-44 aspect-video rounded-2xl border-2 border-slate-700/80 shadow-2xl overflow-hidden bg-slate-900">
-                {rtc.isCamOff ? (
-                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[10px]">
-                    <VideoOff className="w-5 h-5 mb-1" />
-                    <span>Doctor Cam Off</span>
-                  </div>
-                ) : (
-                  <VideoPlayer
-                    stream={rtc.localStream}
-                    muted
-                    mirror
-                    className="w-full h-full"
-                    label="Dr. Sharma (You)"
-                    objectFit="cover"
-                  />
-                )}
               </div>
             )}
           </div>

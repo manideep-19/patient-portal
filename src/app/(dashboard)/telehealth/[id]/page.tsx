@@ -261,7 +261,11 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               Ready to Join Teleconsultation?
             </h1>
             <p className="text-xs text-white/70 mt-1">
-              Consulting with <strong className="text-white">{doctorName}</strong>
+              {isGuest ? (
+                <>Joining as <strong className="text-brand font-semibold">{currentDisplayName}</strong> with {doctorName}</>
+              ) : (
+                <>Consulting with <strong className="text-white">{doctorName}</strong></>
+              )}
             </p>
           </div>
 
@@ -289,7 +293,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
                 muted
                 mirror={rtc.facingMode === "user"}
                 className="w-full h-full"
-                label={`${patient.name} (You)`}
+                label={`${currentDisplayName} (You)`}
                 objectFit="cover"
               />
             )}
@@ -498,9 +502,10 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         {rtc.remotePeers.length > 0 ? (
           <VideoGrid
             localStream={rtc.localStream}
-            localLabel={patient.name}
+            localLabel={currentDisplayName}
             localMirror={rtc.facingMode === "user"}
             localCamOff={rtc.isCamOff}
+            localMicMuted={rtc.isMicMuted}
             remotePeers={rtc.remotePeers}
             onRetry={rtc.restartConnection}
             className="w-full h-full"
@@ -662,49 +667,6 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               title="Dismiss"
             >
               <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 5. Patient Self-View PiP — only show in 2-person mode (VideoGrid handles 3-4 person layout) */}
-      {rtc.remotePeers.length === 1 && (
-        <div className="absolute bottom-28 right-4 sm:bottom-28 sm:right-6 z-30 w-36 sm:w-48 aspect-video rounded-2xl border-2 border-white/20 shadow-2xl overflow-hidden bg-black/85 backdrop-blur-md group">
-          {rtc.isCamOff ? (
-            <div className="w-full h-full bg-black/80 flex flex-col items-center justify-center text-white/50 text-[10px]">
-              <VideoOff className="w-5 h-5 mb-0.5 text-destructive" />
-              <span>Cam Off</span>
-            </div>
-          ) : (
-            <VideoPlayer
-              stream={rtc.localStream}
-              muted
-              mirror={rtc.facingMode === "user"}
-              className="w-full h-full"
-              label="You"
-              objectFit="cover"
-            />
-          )}
-
-          {/* Quick PiP action controls */}
-          <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 z-10">
-            <button
-              onClick={rtc.toggleMic}
-              className={`p-1 rounded-full transition-colors cursor-pointer ${
-                rtc.isMicMuted ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-              }`}
-              title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
-            >
-              {rtc.isMicMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 text-emerald-400" />}
-            </button>
-            <button
-              onClick={rtc.toggleCamera}
-              className={`p-1 rounded-full transition-colors cursor-pointer ${
-                rtc.isCamOff ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-              }`}
-              title={rtc.isCamOff ? "Turn On Camera" : "Turn Off Camera"}
-            >
-              {rtc.isCamOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3 text-emerald-400" />}
             </button>
           </div>
         </div>

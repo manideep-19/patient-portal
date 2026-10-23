@@ -128,6 +128,24 @@ function generatePeerId(roomId: string, role: "patient" | "doctor" | "guest"): s
   return `smrko-${sanitizeId(roomId)}-${role}`;
 }
 
+/**
+ * Pretty human-readable fallback name based on peer ID role
+ */
+function formatPeerDisplayName(peerId: string): string {
+  if (peerId.includes("-doctor")) return "Dr. Sunita Sharma (Doctor)";
+  if (peerId.includes("-patient")) return "Ananya Sharma (Patient)";
+  if (peerId.includes("-guest")) return "Specialist / Guest";
+  return peerId;
+}
+
+/**
+ * Deterministic initiator rule: In any pair of peers, only the higher ID initiates the call.
+ * This completely eliminates WebRTC glare and duplicate connection conflicts.
+ */
+function shouldInitiateCall(myId: string, otherId: string): boolean {
+  return myId.localeCompare(otherId) > 0;
+}
+
 const MAX_PARTICIPANTS = 4;
 
 /* ------------------------------------------------------------------ */
@@ -386,13 +404,16 @@ export function useWebRTC(
 
       // Update remote peer state
       const existing = remotePeersMapRef.current.get(remotePId);
+      const meta = (call as any).metadata;
       remotePeersMapRef.current.set(remotePId, {
         peerId: remotePId,
         stream,
-        isCamOff: existing?.isCamOff ?? false,
-        isMicMuted: existing?.isMicMuted ?? false,
+        isCamOff: typeof meta?.isCamOff === "boolean" ? meta.isCamOff : (existing?.isCamOff ?? false),
+        isMicMuted: typeof meta?.isMicMuted === "boolean" ? meta.isMicMuted : (existing?.isMicMuted ?? false),
         isTyping: existing?.isTyping ?? false,
-        displayName: existing?.displayName ?? remotePId,
+        displayName: existing?.displayName && !existing.displayName.startsWith("smrko-")
+          ? existing.displayName
+          : (meta?.displayName || formatPeerDisplayName(remotePId)),
       });
       bumpPeers();
       setConnectionState("connected");
@@ -624,29 +645,24 @@ export function useWebRTC(
       const existingMedia = mediaConnsRef.current.get(targetPeerId);
       if (existingMedia && (existingMedia as any).open) return;
 
-      // Ensure the remote peer entry exists
-      if (!remotePeersMapRef.current.has(targetPeerId)) {
-        remotePeersMapRef.current.set(targetPeerId, {
-          peerId: targetPeerId,
-          stream: null,
-          isCamOff: false,
-          isMicMuted: false,
-          isTyping: false,
-          displayName: targetPeerId,
-        });
-        bumpPeers();
-      }
-
       connectingToPeersRef.current.add(targetPeerId);
 
       try {
         // Establish data channel first
-        const dataConn = peer.connect(targetPeerId, { reliable: true });
-        handleDataConnection(dataConn);
+        if (!dataConnsRef.current.has(targetPeerId)) {
+          const dataConn = peer.connect(targetPeerId, { reliable: true });
+          handleDataConnection(dataConn);
+        }
 
-        // Then call with media if local stream exists
+        // Then call with media and metadata if local stream exists
         if (localStreamRef.current) {
-          const call = peer.call(targetPeerId, localStreamRef.current);
+          const call = peer.call(targetPeerId, localStreamRef.current, {
+            metadata: {
+              displayName: displayNameRef.current,
+              isCamOff: isCamOffRef.current,
+              isMicMuted: isMicMutedRef.current,
+            },
+          });
           if (call) {
             handleMediaConnection(call);
           }
@@ -754,6 +770,27 @@ export function useWebRTC(
       if (existingMedia && (existingMedia as any).open && existingMedia !== call) {
         console.log(`[PeerJS] Already connected to ${incomingPeerId}, ignoring duplicate incoming call`);
         return;
+      }
+
+      // Pre-seed entry with caller metadata if available
+      const meta = (call as any).metadata;
+      if (meta?.displayName) {
+        const existing = remotePeersMapRef.current.get(incomingPeerId);
+        remotePeersMapRef.current.set(incomingPeerId, {
+          peerId: incomingPeerId,
+          stream: existing?.stream ?? null,
+          isCamOff: meta.isCamOff ?? existing?.isCamOff ?? false,
+          isMicMuted: meta.isMicMuted ?? existing?.isMicMuted ?? false,
+          isTyping: false,
+          displayName: meta.displayName,
+        });
+        bumpPeers();
+      }
+
+      // Ensure data connection back to caller if missing
+      if (!dataConnsRef.current.has(incomingPeerId) && peerRef.current) {
+        const dataConn = peerRef.current.connect(incomingPeerId, { reliable: true });
+        handleDataConnection(dataConn);
       }
 
       setConnectionState("connecting");
@@ -1048,23 +1085,36 @@ export function useWebRTC(
 
     let timer: NodeJS.Timeout | null = null;
     const initial = setTimeout(() => {
+      const myId = peerRef.current?.id;
       if (
         peerRef.current &&
         !peerRef.current.destroyed &&
         connectionState === "waiting" &&
         remotePeersMapRef.current.size === 0
       ) {
-        targets.forEach((t) => connectToPeer(t));
+        targets.forEach((t) => {
+          // If my ID > target ID, I initiate the call
+          if (!myId || shouldInitiateCall(myId, t)) {
+            connectToPeer(t);
+          } else {
+            console.log(`[AutoConnect] Lower ID ${myId} waiting for ${t} to initiate call...`);
+          }
+        });
       }
 
       timer = setInterval(() => {
+        const curMyId = peerRef.current?.id;
         if (
           peerRef.current &&
           !peerRef.current.destroyed &&
           connectionState === "waiting" &&
           remotePeersMapRef.current.size === 0
         ) {
-          targets.forEach((t) => connectToPeer(t));
+          targets.forEach((t) => {
+            if (!curMyId || shouldInitiateCall(curMyId, t)) {
+              connectToPeer(t);
+            }
+          });
         }
       }, 4000);
     }, initialDelay);
