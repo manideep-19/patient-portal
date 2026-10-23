@@ -1,6 +1,7 @@
 "use client";
 
-import React, { useRef, useEffect } from "react";
+import React, { useRef, useEffect, useState, useCallback } from "react";
+import { VideoOff, RefreshCw, Volume2 } from "lucide-react";
 
 interface VideoPlayerProps {
   stream: MediaStream | null;
@@ -10,6 +11,8 @@ interface VideoPlayerProps {
   label?: string;
   showLabel?: boolean;
   objectFit?: "cover" | "contain";
+  isCamOff?: boolean;
+  onRetry?: () => void;
   onClick?: () => void;
 }
 
@@ -21,9 +24,31 @@ export function VideoPlayer({
   label,
   showLabel = true,
   objectFit = "cover",
+  isCamOff = false,
+  onRetry,
   onClick,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [isStalled, setIsStalled] = useState(false);
+
+  const safePlay = useCallback(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const playPromise = video.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsPlaying(true);
+          setIsStalled(false);
+        })
+        .catch((err) => {
+          console.log("[VideoPlayer] Autoplay notice:", err.message);
+          setIsStalled(true);
+        });
+    }
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -33,17 +58,38 @@ export function VideoPlayer({
       video.srcObject = stream;
     }
 
-    const safePlay = () => {
-      const playPromise = video.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          // Normal when browser policy requires user gesture or tab is backgrounded
-          console.log("[VideoPlayer] Autoplay notice:", err.message);
-        });
-      }
+    safePlay();
+
+    // Listen to video element lifecycle events
+    const handlePlaying = () => {
+      setIsPlaying(true);
+      setIsStalled(false);
     };
 
-    safePlay();
+    const handleStalledOrWaiting = () => {
+      setIsStalled(true);
+      safePlay();
+    };
+
+    const handleLoadedMetadata = () => {
+      safePlay();
+    };
+
+    video.addEventListener("playing", handlePlaying);
+    video.addEventListener("waiting", handleStalledOrWaiting);
+    video.addEventListener("stalled", handleStalledOrWaiting);
+    video.addEventListener("loadedmetadata", handleLoadedMetadata);
+
+    // Listen to stream tracks becoming unmuted (critical when other person turns camera back on)
+    const videoTracks = stream.getVideoTracks();
+    const handleTrackUnmute = () => {
+      console.log("[VideoPlayer] Video track unmuted, resuming playback...");
+      safePlay();
+    };
+
+    videoTracks.forEach((track) => {
+      track.addEventListener("unmute", handleTrackUnmute);
+    });
 
     // Auto-resume video playback when tab becomes visible again
     const handleVisibilityChange = () => {
@@ -55,9 +101,44 @@ export function VideoPlayer({
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      video.removeEventListener("playing", handlePlaying);
+      video.removeEventListener("waiting", handleStalledOrWaiting);
+      video.removeEventListener("stalled", handleStalledOrWaiting);
+      video.removeEventListener("loadedmetadata", handleLoadedMetadata);
+      videoTracks.forEach((track) => {
+        track.removeEventListener("unmute", handleTrackUnmute);
+      });
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [stream]);
+  }, [stream, safePlay]);
+
+  // When camera is explicitly switched off by peer
+  if (isCamOff) {
+    return (
+      <div
+        className={`relative flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-ink text-white p-6 ${className}`}
+        onClick={onClick}
+      >
+        <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-white/10 border-2 border-white/20 flex items-center justify-center shadow-2xl mb-4 relative">
+          <VideoOff className="w-9 h-9 sm:w-11 sm:h-11 text-white/70" />
+          <span className="absolute bottom-1 right-1 w-4 h-4 rounded-full bg-amber-400 border-2 border-slate-950" />
+        </div>
+        <h4 className="text-base sm:text-lg font-bold tracking-tight text-white">
+          {label?.replace(/\s*\([^)]*\)/, "") || "Participant"}
+        </h4>
+        <p className="text-xs text-white/60 mt-1 flex items-center gap-1.5">
+          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+          <span>Camera is switched off • Audio is active</span>
+        </p>
+
+        {showLabel && label && (
+          <div className="absolute bottom-3 left-3 text-[10px] bg-black/60 backdrop-blur-md px-2.5 py-1 rounded-lg text-white/90 font-medium border border-white/10">
+            {label}
+          </div>
+        )}
+      </div>
+    );
+  }
 
   if (!stream) {
     return (
@@ -67,20 +148,9 @@ export function VideoPlayer({
       >
         <div className="flex flex-col items-center gap-2 text-white/40">
           <div className="w-12 h-12 rounded-full bg-white/10 flex items-center justify-center">
-            <svg
-              className="w-6 h-6"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth={1.5}
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                d="m15.75 10.5 4.72-4.72a.75.75 0 0 1 1.28.53v11.38a.75.75 0 0 1-1.28.53l-4.72-4.72M4.5 18.75h9a2.25 2.25 0 0 0 2.25-2.25v-9a2.25 2.25 0 0 0-2.25-2.25h-9A2.25 2.25 0 0 0 2.25 7.5v9a2.25 2.25 0 0 0 2.25 2.25Z"
-              />
-            </svg>
+            <VideoOff className="w-6 h-6" />
           </div>
-          <span className="text-xs">No video</span>
+          <span className="text-xs">No video stream</span>
         </div>
       </div>
     );
@@ -97,9 +167,28 @@ export function VideoPlayer({
           mirror ? "scale-x-[-1]" : ""
         }`}
       />
+
+      {/* Tap to Resume / Play overlay if video was paused by browser policy */}
+      {isStalled && (
+        <div
+          onClick={(e) => {
+            e.stopPropagation();
+            safePlay();
+            onRetry?.();
+          }}
+          className="absolute inset-0 z-20 bg-black/50 backdrop-blur-xs flex flex-col items-center justify-center gap-2 cursor-pointer text-white animate-in fade-in"
+        >
+          <div className="p-3 rounded-full bg-brand/90 hover:bg-brand text-white shadow-lift transition-transform hover:scale-105">
+            <RefreshCw className="w-6 h-6" />
+          </div>
+          <span className="text-xs font-semibold">Video paused • Click to resume</span>
+        </div>
+      )}
+
       {showLabel && label && (
-        <div className="absolute bottom-2 left-2 text-[10px] bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-lg text-white/90 font-medium">
-          {label}
+        <div className="absolute bottom-3 left-3 text-[10px] bg-black/60 backdrop-blur-sm px-2.5 py-1 rounded-lg text-white/90 font-medium border border-white/10 z-10 flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span>{label}</span>
         </div>
       )}
     </div>

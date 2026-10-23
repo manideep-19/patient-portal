@@ -264,9 +264,11 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
             {rtc.remoteStream ? (
               <VideoPlayer
                 stream={rtc.remoteStream}
+                isCamOff={rtc.isRemoteCamOff}
                 className="w-full h-full"
                 label={`${patientName} (Patient Live)`}
                 objectFit="contain"
+                onRetry={rtc.restartConnection}
               />
             ) : (
               <div className="flex flex-col items-center justify-center p-8 text-center max-w-md space-y-4">

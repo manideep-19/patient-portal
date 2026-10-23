@@ -35,10 +35,12 @@ export interface ChatMessage {
 }
 
 interface DataPayload {
-  type: "chat" | "typing" | "stop_typing";
+  type: "chat" | "typing" | "stop_typing" | "media_state";
   message?: string;
   timestamp?: string;
   id?: string;
+  isCamOff?: boolean;
+  isMicMuted?: boolean;
 }
 
 export interface UseWebRTCOptions {
@@ -63,6 +65,8 @@ export interface UseWebRTCReturn {
   isCamOff: boolean;
   isScreenSharing: boolean;
   isRemoteTyping: boolean;
+  isRemoteCamOff: boolean;
+  isRemoteMicMuted: boolean;
   callDurationSeconds: number;
   chatMessages: ChatMessage[];
   peerId: string | null;
@@ -79,6 +83,7 @@ export interface UseWebRTCReturn {
   toggleScreenShare: () => Promise<void>;
   sendChatMessage: (text: string) => void;
   sendTypingIndicator: (isTyping: boolean) => void;
+  restartConnection: () => void;
   disconnect: () => void;
 }
 
@@ -118,6 +123,8 @@ export function useWebRTC(
   const [isCamOff, setIsCamOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRemoteTyping, setIsRemoteTyping] = useState(false);
+  const [isRemoteCamOff, setIsRemoteCamOff] = useState(false);
+  const [isRemoteMicMuted, setIsRemoteMicMuted] = useState(false);
 
   // Call timer
   const [callDurationSeconds, setCallDurationSeconds] = useState(0);
@@ -392,26 +399,42 @@ export function useWebRTC(
             disconnectGraceTimeoutRef.current = null;
           }
         } else if (ice === "disconnected") {
-          // Grace period: allow 15 seconds for ICE reconnection / network recovery
-          console.warn("[WebRTC] ICE temporarily disconnected; holding stream for recovery...");
+          console.warn("[WebRTC] ICE temporarily disconnected; triggering active recovery...");
           setConnectionState("reconnecting");
+          // Active recovery: restart ICE to recover media stream immediately
+          if (pc.restartIce) {
+            try {
+              pc.restartIce();
+            } catch (err) {
+              console.log("[WebRTC] restartIce notice:", err);
+            }
+          }
           if (!disconnectGraceTimeoutRef.current) {
             disconnectGraceTimeoutRef.current = setTimeout(() => {
               if (
                 pc.iceConnectionState === "disconnected" ||
                 pc.iceConnectionState === "failed"
               ) {
-                setRemoteStream(null);
-                setConnectionState("disconnected");
-                stopCallTimer();
-                stopNetworkMonitor();
+                // If connection remains disconnected, attempt auto-reconnect
+                const targetId =
+                  call.peer ||
+                  options.targetPeerId ||
+                  `smrko-${sanitizeId(roomId)}-${role === "doctor" ? "patient" : "doctor"}`;
+                if (peerRef.current && !peerRef.current.destroyed) {
+                  console.log("[WebRTC] Reconnecting to peer:", targetId);
+                  connectToPeer(targetId);
+                }
               }
-            }, 15000);
+            }, 8000);
           }
         } else if (ice === "failed") {
           console.warn("[WebRTC] ICE failed, attempting restart...");
           if (pc.restartIce) {
-            pc.restartIce();
+            try {
+              pc.restartIce();
+            } catch (err) {
+              console.log("[WebRTC] restartIce error:", err);
+            }
           }
         }
       };
@@ -433,41 +456,66 @@ export function useWebRTC(
     });
   }, [startCallTimer, startNetworkMonitor, stopCallTimer, stopNetworkMonitor]);
 
-  /* ---------------------------------------------------------------- */
-  /*  Handle data connection (chat channel)                            */
-  /* ---------------------------------------------------------------- */
-
-  const handleDataConnection = useCallback((conn: DataConnection) => {
-    dataConnRef.current = conn;
-
-    conn.on("open", () => {
-      console.log("[DataChannel] Open");
-    });
-
-    conn.on("data", (raw) => {
-      const payload = raw as DataPayload;
-      if (payload.type === "chat" && payload.message) {
-        const msg: ChatMessage = {
-          id: payload.id || `msg-${Date.now()}`,
-          sender: "remote",
-          text: payload.message,
-          timestamp:
-            payload.timestamp ||
-            new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-          status: "delivered",
-        };
-        setChatMessages((prev) => [...prev, msg]);
-      } else if (payload.type === "typing") {
-        setIsRemoteTyping(true);
-      } else if (payload.type === "stop_typing") {
-        setIsRemoteTyping(false);
+  const sendMediaState = useCallback(
+    (camOff: boolean, micMuted: boolean) => {
+      if (dataConnRef.current && (dataConnRef.current as any).open) {
+        dataConnRef.current.send({
+          type: "media_state",
+          isCamOff: camOff,
+          isMicMuted: micMuted,
+        });
       }
-    });
+    },
+    []
+  );
 
-    conn.on("close", () => {
-      console.log("[DataChannel] Closed");
-    });
-  }, []);
+  /* ---------------------------------------------------------------- */
+  /*  Handle data connection (chat & media status channel)             */
+  /* ---------------------------------------------------------------- */
+
+  const handleDataConnection = useCallback(
+    (conn: DataConnection) => {
+      dataConnRef.current = conn;
+
+      conn.on("open", () => {
+        console.log("[DataChannel] Open");
+        // Sync media state immediately on connection open
+        sendMediaState(isCamOff, isMicMuted);
+      });
+
+      conn.on("data", (raw) => {
+        const payload = raw as DataPayload;
+        if (payload.type === "media_state") {
+          if (typeof payload.isCamOff === "boolean") {
+            setIsRemoteCamOff(payload.isCamOff);
+          }
+          if (typeof payload.isMicMuted === "boolean") {
+            setIsRemoteMicMuted(payload.isMicMuted);
+          }
+        } else if (payload.type === "chat" && payload.message) {
+          const msg: ChatMessage = {
+            id: payload.id || `msg-${Date.now()}`,
+            sender: "remote",
+            text: payload.message,
+            timestamp:
+              payload.timestamp ||
+              new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+            status: "delivered",
+          };
+          setChatMessages((prev) => [...prev, msg]);
+        } else if (payload.type === "typing") {
+          setIsRemoteTyping(true);
+        } else if (payload.type === "stop_typing") {
+          setIsRemoteTyping(false);
+        }
+      });
+
+      conn.on("close", () => {
+        console.log("[DataChannel] Closed");
+      });
+    },
+    [isCamOff, isMicMuted, sendMediaState]
+  );
 
   /* ---------------------------------------------------------------- */
   /*  Connect to a remote peer (outgoing call)                         */
@@ -507,20 +555,24 @@ export function useWebRTC(
   const toggleMic = useCallback(() => {
     if (!localStreamRef.current) return;
     const audioTracks = localStreamRef.current.getAudioTracks();
+    const next = !isMicMuted;
     audioTracks.forEach((t) => {
-      t.enabled = !t.enabled;
+      t.enabled = !next;
     });
-    setIsMicMuted((prev) => !prev);
-  }, []);
+    setIsMicMuted(next);
+    sendMediaState(isCamOff, next);
+  }, [isMicMuted, isCamOff, sendMediaState]);
 
   const toggleCamera = useCallback(() => {
     if (!localStreamRef.current) return;
     const videoTracks = localStreamRef.current.getVideoTracks();
+    const next = !isCamOff;
     videoTracks.forEach((t) => {
-      t.enabled = !t.enabled;
+      t.enabled = !next;
     });
-    setIsCamOff((prev) => !prev);
-  }, []);
+    setIsCamOff(next);
+    sendMediaState(next, isMicMuted);
+  }, [isCamOff, isMicMuted, sendMediaState]);
 
   /* ---------------------------------------------------------------- */
   /*  Switch Camera (Front / Rear on mobile & tablets)                 */
@@ -790,6 +842,34 @@ export function useWebRTC(
     connectToPeer,
   ]);
 
+  /* ---------------------------------------------------------------- */
+  /*  Manual Restart Connection (Re-sync stream & ICE restart)          */
+  /* ---------------------------------------------------------------- */
+
+  const restartConnection = useCallback(() => {
+    console.log("[WebRTC] Manual restartConnection triggered...");
+    setConnectionState("reconnecting");
+    if (mediaConnRef.current) {
+      const pc = (mediaConnRef.current as any).peerConnection as RTCPeerConnection | undefined;
+      if (pc && pc.restartIce) {
+        try {
+          pc.restartIce();
+        } catch (e) {
+          console.warn("[restartConnection error]", e);
+        }
+      }
+    }
+    const targetId =
+      remotePeerId ||
+      options.targetPeerId ||
+      `smrko-${sanitizeId(roomId)}-${role === "doctor" ? "patient" : "doctor"}`;
+    if (targetId && peerRef.current && !peerRef.current.destroyed) {
+      setTimeout(() => {
+        connectToPeer(targetId);
+      }, 300);
+    }
+  }, [remotePeerId, options.targetPeerId, roomId, role, connectToPeer]);
+
   return {
     localStream,
     remoteStream,
@@ -799,6 +879,8 @@ export function useWebRTC(
     isCamOff,
     isScreenSharing,
     isRemoteTyping,
+    isRemoteCamOff,
+    isRemoteMicMuted,
     callDurationSeconds,
     chatMessages,
     peerId,
@@ -814,6 +896,7 @@ export function useWebRTC(
     toggleScreenShare,
     sendChatMessage,
     sendTypingIndicator,
+    restartConnection,
     disconnect,
   };
 }

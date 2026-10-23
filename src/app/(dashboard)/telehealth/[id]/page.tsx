@@ -488,9 +488,11 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         {rtc.remoteStream ? (
           <VideoPlayer
             stream={rtc.remoteStream}
+            isCamOff={rtc.isRemoteCamOff}
             className="w-full h-full"
             label={`${doctorName} (Doctor)`}
             objectFit="cover"
+            onRetry={rtc.restartConnection}
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-ink gap-3 text-center p-6">
@@ -590,11 +592,19 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         </div>
       </div>
 
-      {/* 3. Reconnecting Banner */}
+      {/* 3. Reconnecting Banner with 1-click active recovery */}
       {rtc.connectionState === "reconnecting" && (
-        <div className="absolute top-16 left-4 right-4 z-35 p-2.5 rounded-xl bg-amber-500/90 text-ink text-xs font-semibold flex items-center justify-center gap-2 animate-pulse shadow-lg">
-          <AlertTriangle className="w-4 h-4 text-ink" />
-          <span>Reconnecting... Please hold on.</span>
+        <div className="absolute top-16 left-4 right-4 z-35 p-3 rounded-2xl bg-amber-500/95 text-slate-950 text-xs font-semibold flex items-center justify-between gap-3 shadow-2xl backdrop-blur-md animate-pulse">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-slate-950 shrink-0" />
+            <span>Connection temporarily interrupted. Reconnecting stream...</span>
+          </div>
+          <button
+            onClick={rtc.restartConnection}
+            className="px-3 py-1 rounded-xl bg-slate-950 text-white text-[11px] font-bold hover:bg-slate-900 transition-colors shrink-0 cursor-pointer shadow-soft"
+          >
+            Reconnect Now
+          </button>
         </div>
       )}
 
