@@ -1,8 +1,12 @@
 /**
- * SmrkoMed Telehealth — WebRTC Hook
+ * SmrkoMed Telehealth — Multi-Party WebRTC Hook
  *
  * Wraps PeerJS to provide a single React hook for the entire
  * real-time video / audio / chat lifecycle.
+ *
+ * Supports up to 4 participants in a P2P mesh topology.
+ * Each participant maintains a direct PeerConnection to every
+ * other participant in the room.
  */
 
 "use client";
@@ -29,23 +33,37 @@ export type NetworkQuality = "excellent" | "good" | "fair" | "poor" | "unknown";
 export interface ChatMessage {
   id: string;
   sender: "local" | "remote";
+  senderName?: string;
   text: string;
   timestamp: string;
   status: "sent" | "delivered";
 }
 
+/** Per-participant info exposed to the UI */
+export interface RemotePeer {
+  peerId: string;
+  stream: MediaStream | null;
+  isCamOff: boolean;
+  isMicMuted: boolean;
+  isTyping: boolean;
+  displayName: string;
+}
+
 interface DataPayload {
-  type: "chat" | "typing" | "stop_typing" | "media_state";
+  type: "chat" | "typing" | "stop_typing" | "media_state" | "room_announce" | "room_peers";
   message?: string;
   timestamp?: string;
   id?: string;
   isCamOff?: boolean;
   isMicMuted?: boolean;
+  senderName?: string;
+  /** List of peer IDs this participant knows about (for mesh discovery) */
+  knownPeers?: string[];
 }
 
 export interface UseWebRTCOptions {
-  /** Whether this peer is the host (patient) or the joiner (doctor) */
-  role: "patient" | "doctor";
+  /** Whether this peer is the host (patient), doctor, or an additional guest */
+  role: "patient" | "doctor" | "guest";
   /** Display name shown in chat */
   displayName: string;
   /** Optional custom peer ID */
@@ -58,21 +76,29 @@ export interface UseWebRTCOptions {
 
 export interface UseWebRTCReturn {
   localStream: MediaStream | null;
+  /** @deprecated Use remotePeers instead for multi-party */
   remoteStream: MediaStream | null;
+  /** All remote participants with their streams and media states */
+  remotePeers: RemotePeer[];
   connectionState: ConnectionState;
   networkQuality: NetworkQuality;
   isMicMuted: boolean;
   isCamOff: boolean;
   isScreenSharing: boolean;
+  /** @deprecated Use remotePeers[].isTyping */
   isRemoteTyping: boolean;
+  /** @deprecated Use remotePeers[].isCamOff */
   isRemoteCamOff: boolean;
+  /** @deprecated Use remotePeers[].isMicMuted */
   isRemoteMicMuted: boolean;
   callDurationSeconds: number;
   chatMessages: ChatMessage[];
   peerId: string | null;
+  /** @deprecated Use remotePeers instead */
   remotePeerId: string | null;
   error: string | null;
   facingMode: "user" | "environment";
+  participantCount: number;
 
   startLocalMedia: (video?: boolean, audio?: boolean) => Promise<void>;
   stopLocalMedia: () => void;
@@ -95,9 +121,14 @@ function sanitizeId(str: string): string {
   return str.replace(/[^a-zA-Z0-9_-]/g, "");
 }
 
-function generatePeerId(roomId: string, role: "patient" | "doctor"): string {
+function generatePeerId(roomId: string, role: "patient" | "doctor" | "guest"): string {
+  if (role === "guest") {
+    return `smrko-${sanitizeId(roomId)}-guest-${Math.random().toString(36).slice(2, 7)}`;
+  }
   return `smrko-${sanitizeId(roomId)}-${role}`;
 }
+
+const MAX_PARTICIPANTS = 4;
 
 /* ------------------------------------------------------------------ */
 /*  Hook                                                               */
@@ -111,7 +142,6 @@ export function useWebRTC(
 
   // Streams
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
 
   // Connection state
   const [connectionState, setConnectionState] = useState<ConnectionState>("idle");
@@ -122,9 +152,6 @@ export function useWebRTC(
   const [isMicMuted, setIsMicMuted] = useState(false);
   const [isCamOff, setIsCamOff] = useState(false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
-  const [isRemoteTyping, setIsRemoteTyping] = useState(false);
-  const [isRemoteCamOff, setIsRemoteCamOff] = useState(false);
-  const [isRemoteMicMuted, setIsRemoteMicMuted] = useState(false);
 
   // Call timer
   const [callDurationSeconds, setCallDurationSeconds] = useState(0);
@@ -134,22 +161,57 @@ export function useWebRTC(
 
   // Peer info
   const [peerId, setPeerId] = useState<string | null>(null);
-  const [remotePeerId, setRemotePeerId] = useState<string | null>(null);
 
   // Camera facing mode (front / rear for mobile devices)
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
   const facingModeRef = useRef<"user" | "environment">("user");
 
+  // ---- Multi-peer state ----
+  // Map of remotePeerId -> RemotePeer state (re-rendered via version counter)
+  const remotePeersMapRef = useRef<Map<string, RemotePeer>>(new Map());
+  const [remotePeersVersion, setRemotePeersVersion] = useState(0);
+  const bumpPeers = useCallback(() => setRemotePeersVersion((v) => v + 1), []);
+
+  // Map of remotePeerId -> MediaConnection
+  const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map());
+  // Map of remotePeerId -> DataConnection
+  const dataConnsRef = useRef<Map<string, DataConnection>>(new Map());
+  // Set of peer IDs we've already attempted to connect to (prevent duplicates)
+  const connectingToPeersRef = useRef<Set<string>>(new Set());
+
   // Refs for cleanup
   const peerRef = useRef<Peer | null>(null);
-  const mediaConnRef = useRef<MediaConnection | null>(null);
-  const dataConnRef = useRef<DataConnection | null>(null);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const localStreamRef = useRef<MediaStream | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const originalVideoTrackRef = useRef<MediaStreamTrack | null>(null);
-  const disconnectGraceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const disconnectGraceTimeoutsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
+
+  // Backward compat refs
+  const isCamOffRef = useRef(false);
+  const isMicMutedRef = useRef(false);
+  const displayNameRef = useRef(displayName);
+
+  // Keep refs in sync
+  isCamOffRef.current = isCamOff;
+  isMicMutedRef.current = isMicMuted;
+  displayNameRef.current = displayName;
+
+  /* ---------------------------------------------------------------- */
+  /*  Derived state for backward compatibility                         */
+  /* ---------------------------------------------------------------- */
+
+  const remotePeers = Array.from(remotePeersMapRef.current.values());
+  const firstRemote = remotePeers[0] ?? null;
+
+  // Backward compat single-peer fields
+  const remoteStream = firstRemote?.stream ?? null;
+  const remotePeerId = firstRemote?.peerId ?? null;
+  const isRemoteTyping = remotePeers.some((p) => p.isTyping);
+  const isRemoteCamOff = firstRemote?.isCamOff ?? false;
+  const isRemoteMicMuted = firstRemote?.isMicMuted ?? false;
+  const participantCount = 1 + remotePeers.length; // self + remotes
 
   /* ---------------------------------------------------------------- */
   /*  Start local media (camera + mic)                                 */
@@ -201,109 +263,6 @@ export function useWebRTC(
       setLocalStream(null);
     }
   }, []);
-
-  /* ---------------------------------------------------------------- */
-  /*  Initialize Peer & listen for incoming calls                      */
-  /* ---------------------------------------------------------------- */
-
-  const initPeer = useCallback((customId?: string) => {
-    const id = customId || options.customPeerId || generatePeerId(roomId, role);
-
-    const peer = new Peer(id, {
-      debug: 1,
-      config: {
-        iceServers: [
-          // STUN: Fast, reliable global Google & Twilio STUN cluster
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-          { urls: "stun:stun2.l.google.com:19302" },
-          { urls: "stun:stun3.l.google.com:19302" },
-          { urls: "stun:stun4.l.google.com:19302" },
-          { urls: "stun:global.stun.twilio.com:3478" },
-          { urls: "stun:stun.services.mozilla.com" },
-
-          // Optional custom production TURN credentials via environment variables:
-          ...(typeof process !== "undefined" && process.env?.NEXT_PUBLIC_TURN_URL
-            ? [
-                {
-                  urls: process.env.NEXT_PUBLIC_TURN_URL.split(","),
-                  username: process.env.NEXT_PUBLIC_TURN_USERNAME || "",
-                  credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL || "",
-                },
-              ]
-            : []),
-        ],
-        iceCandidatePoolSize: 10,
-        iceTransportPolicy: "all",
-      },
-    });
-
-    peer.on("open", (openId) => {
-      setPeerId(openId);
-      setConnectionState("waiting");
-    });
-
-    peer.on("error", (err) => {
-      console.error("[PeerJS Error]", err);
-      if (err.type === "unavailable-id") {
-        console.warn("[PeerJS] ID taken, generating alternate ID...");
-        const altId = `${id}-${Math.random().toString(36).slice(2, 6)}`;
-        peer.destroy();
-        setTimeout(() => {
-          initPeer(altId);
-        }, 800);
-        return;
-      }
-      if (err.type === "peer-unavailable") {
-        // Expected when other peer has not yet connected; do not set error
-        console.log("[PeerJS] Remote peer not yet online; waiting...");
-      } else if (err.type === "network" || err.type === "server-error") {
-        // Signaling server connection dropped; attempt background socket reconnect
-        setTimeout(() => {
-          if (peerRef.current && !peerRef.current.destroyed && !peerRef.current.open) {
-            peerRef.current.reconnect();
-          }
-        }, 3000);
-      } else {
-        console.warn(`[PeerJS Notice] ${err.message}`);
-      }
-    });
-
-    peer.on("disconnected", () => {
-      // Signaling socket lost, but P2P media stream is direct and often still running!
-      console.log("[PeerJS] Signaling server socket disconnected, reconnecting in background...");
-      setTimeout(() => {
-        if (peerRef.current && !peerRef.current.destroyed && !peerRef.current.open) {
-          peerRef.current.reconnect();
-        }
-      }, 1500);
-    });
-
-    // Listen for incoming calls (patient waits, doctor may also wait)
-    peer.on("call", (call) => {
-      // If we already have an active call open, ignore duplicate offer
-      if (
-        mediaConnRef.current &&
-        (mediaConnRef.current as any).open &&
-        mediaConnRef.current !== call
-      ) {
-        console.log("[PeerJS] Already in active call, ignoring duplicate incoming call");
-        return;
-      }
-      setConnectionState("connecting");
-      // Answer with our local stream
-      call.answer(localStreamRef.current || undefined);
-      handleMediaConnection(call);
-    });
-
-    // Listen for incoming data connections
-    peer.on("connection", (conn) => {
-      handleDataConnection(conn);
-    });
-
-    peerRef.current = peer;
-    return peer;
-  }, [roomId, role, options.customPeerId]);
 
   /* ---------------------------------------------------------------- */
   /*  Call timer & network monitor helpers                             */
@@ -371,28 +330,71 @@ export function useWebRTC(
   }, []);
 
   /* ---------------------------------------------------------------- */
+  /*  Broadcast to all connected data channels                         */
+  /* ---------------------------------------------------------------- */
+
+  const broadcastData = useCallback((payload: DataPayload) => {
+    dataConnsRef.current.forEach((conn) => {
+      if ((conn as any).open) {
+        try {
+          conn.send(payload);
+        } catch {
+          // channel closed
+        }
+      }
+    });
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /*  Send media state to all peers                                    */
+  /* ---------------------------------------------------------------- */
+
+  const sendMediaState = useCallback(
+    (camOff: boolean, micMuted: boolean) => {
+      broadcastData({
+        type: "media_state",
+        isCamOff: camOff,
+        isMicMuted: micMuted,
+        senderName: displayNameRef.current,
+      });
+    },
+    [broadcastData]
+  );
+
+  /* ---------------------------------------------------------------- */
   /*  Handle media connection (incoming or outgoing call)              */
   /* ---------------------------------------------------------------- */
 
   const handleMediaConnection = useCallback((call: MediaConnection) => {
-    // Prevent replacing an existing active call
-    if (
-      mediaConnRef.current &&
-      (mediaConnRef.current as any).open &&
-      mediaConnRef.current !== call
-    ) {
-      console.log("[MediaConnection] Maintaining current active call, ignoring duplicate");
+    const remotePId = call.peer;
+
+    // If we already have an active call to this peer, skip
+    const existing = mediaConnsRef.current.get(remotePId);
+    if (existing && (existing as any).open && existing !== call) {
+      console.log(`[MediaConnection] Already connected to ${remotePId}, ignoring duplicate`);
       return;
     }
-    mediaConnRef.current = call;
+    mediaConnsRef.current.set(remotePId, call);
 
     call.on("stream", (stream) => {
-      if (disconnectGraceTimeoutRef.current) {
-        clearTimeout(disconnectGraceTimeoutRef.current);
-        disconnectGraceTimeoutRef.current = null;
+      // Clear grace timeout for this peer
+      const graceTimeout = disconnectGraceTimeoutsRef.current.get(remotePId);
+      if (graceTimeout) {
+        clearTimeout(graceTimeout);
+        disconnectGraceTimeoutsRef.current.delete(remotePId);
       }
-      setRemoteStream(stream);
-      setRemotePeerId(call.peer);
+
+      // Update remote peer state
+      const existing = remotePeersMapRef.current.get(remotePId);
+      remotePeersMapRef.current.set(remotePId, {
+        peerId: remotePId,
+        stream,
+        isCamOff: existing?.isCamOff ?? false,
+        isMicMuted: existing?.isMicMuted ?? false,
+        isTyping: existing?.isTyping ?? false,
+        displayName: existing?.displayName ?? remotePId,
+      });
+      bumpPeers();
       setConnectionState("connected");
       startCallTimer();
       startNetworkMonitor(call);
@@ -403,88 +405,133 @@ export function useWebRTC(
     if (pc) {
       pc.oniceconnectionstatechange = () => {
         const ice = pc.iceConnectionState;
-        console.log("[WebRTC ICE State]", ice);
+        console.log(`[WebRTC ICE State] ${remotePId}:`, ice);
         if (ice === "connected" || ice === "completed") {
-          setConnectionState("connected");
-          if (disconnectGraceTimeoutRef.current) {
-            clearTimeout(disconnectGraceTimeoutRef.current);
-            disconnectGraceTimeoutRef.current = null;
+          // Check if any peer is connected
+          if (remotePeersMapRef.current.size > 0) {
+            setConnectionState("connected");
+          }
+          const graceTimeout = disconnectGraceTimeoutsRef.current.get(remotePId);
+          if (graceTimeout) {
+            clearTimeout(graceTimeout);
+            disconnectGraceTimeoutsRef.current.delete(remotePId);
           }
         } else if (ice === "disconnected") {
-          console.warn("[WebRTC] ICE temporarily disconnected, allowing candidate recovery...");
-          if (!disconnectGraceTimeoutRef.current) {
-            disconnectGraceTimeoutRef.current = setTimeout(() => {
+          console.warn(`[WebRTC] ICE temporarily disconnected for ${remotePId}, allowing candidate recovery...`);
+          if (!disconnectGraceTimeoutsRef.current.has(remotePId)) {
+            const timeout = setTimeout(() => {
               if (
                 pc.iceConnectionState === "disconnected" ||
                 pc.iceConnectionState === "failed"
               ) {
-                setConnectionState("reconnecting");
+                // Only show reconnecting if ALL peers are disconnected
+                const anyConnected = Array.from(mediaConnsRef.current.entries()).some(
+                  ([pid, conn]) =>
+                    pid !== remotePId &&
+                    ((conn as any).peerConnection as RTCPeerConnection | undefined)?.iceConnectionState === "connected"
+                );
+                if (!anyConnected) {
+                  setConnectionState("reconnecting");
+                }
               }
+              disconnectGraceTimeoutsRef.current.delete(remotePId);
             }, 3500);
+            disconnectGraceTimeoutsRef.current.set(remotePId, timeout);
           }
         } else if (ice === "failed") {
-          console.warn("[WebRTC] ICE failed");
-          setConnectionState("reconnecting");
+          console.warn(`[WebRTC] ICE failed for ${remotePId}`);
         }
       };
     }
 
     call.on("close", () => {
-      if (!disconnectGraceTimeoutRef.current) {
-        disconnectGraceTimeoutRef.current = setTimeout(() => {
-          setRemoteStream(null);
-          setConnectionState("disconnected");
-          stopCallTimer();
-          stopNetworkMonitor();
+      if (!disconnectGraceTimeoutsRef.current.has(remotePId)) {
+        const timeout = setTimeout(() => {
+          // Remove this peer
+          remotePeersMapRef.current.delete(remotePId);
+          mediaConnsRef.current.delete(remotePId);
+          connectingToPeersRef.current.delete(remotePId);
+          bumpPeers();
+
+          // If no peers left, set disconnected
+          if (remotePeersMapRef.current.size === 0) {
+            setConnectionState("disconnected");
+            stopCallTimer();
+            stopNetworkMonitor();
+          }
         }, 3000);
+        disconnectGraceTimeoutsRef.current.set(remotePId, timeout);
       }
     });
 
     call.on("error", (err) => {
-      console.error("[MediaConnection Error]", err);
+      console.error(`[MediaConnection Error] ${remotePId}:`, err);
     });
-  }, [startCallTimer, startNetworkMonitor, stopCallTimer, stopNetworkMonitor]);
-
-  const sendMediaState = useCallback(
-    (camOff: boolean, micMuted: boolean) => {
-      if (dataConnRef.current && (dataConnRef.current as any).open) {
-        dataConnRef.current.send({
-          type: "media_state",
-          isCamOff: camOff,
-          isMicMuted: micMuted,
-        });
-      }
-    },
-    []
-  );
+  }, [startCallTimer, startNetworkMonitor, stopCallTimer, stopNetworkMonitor, bumpPeers]);
 
   /* ---------------------------------------------------------------- */
   /*  Handle data connection (chat & media status channel)             */
   /* ---------------------------------------------------------------- */
 
+  // Forward declaration for connectToPeer so handleDataConnection can reference it
+  const connectToPeerRef = useRef<(targetPeerId: string) => void>(() => {});
+
   const handleDataConnection = useCallback(
     (conn: DataConnection) => {
-      dataConnRef.current = conn;
+      const remotePId = conn.peer;
+      dataConnsRef.current.set(remotePId, conn);
 
       conn.on("open", () => {
-        console.log("[DataChannel] Open");
+        console.log(`[DataChannel] Open with ${remotePId}`);
         // Sync media state immediately on connection open
-        sendMediaState(isCamOff, isMicMuted);
+        if ((conn as any).open) {
+          conn.send({
+            type: "media_state",
+            isCamOff: isCamOffRef.current,
+            isMicMuted: isMicMutedRef.current,
+            senderName: displayNameRef.current,
+          } as DataPayload);
+        }
+
+        // Announce ourselves and share known peers for mesh discovery
+        if ((conn as any).open) {
+          const knownPeers = Array.from(remotePeersMapRef.current.keys());
+          conn.send({
+            type: "room_announce",
+            senderName: displayNameRef.current,
+            knownPeers,
+          } as DataPayload);
+
+          // Broadcast updated known peer list to ALL connected peers
+          const allKnown = Array.from(remotePeersMapRef.current.keys());
+          if (!allKnown.includes(remotePId)) allKnown.push(remotePId);
+          broadcastData({
+            type: "room_peers",
+            knownPeers: allKnown,
+            senderName: displayNameRef.current,
+          });
+        }
       });
 
       conn.on("data", (raw) => {
         const payload = raw as DataPayload;
+
         if (payload.type === "media_state") {
-          if (typeof payload.isCamOff === "boolean") {
-            setIsRemoteCamOff(payload.isCamOff);
-          }
-          if (typeof payload.isMicMuted === "boolean") {
-            setIsRemoteMicMuted(payload.isMicMuted);
-          }
+          const existing = remotePeersMapRef.current.get(remotePId);
+          remotePeersMapRef.current.set(remotePId, {
+            peerId: remotePId,
+            stream: existing?.stream ?? null,
+            isCamOff: typeof payload.isCamOff === "boolean" ? payload.isCamOff : (existing?.isCamOff ?? false),
+            isMicMuted: typeof payload.isMicMuted === "boolean" ? payload.isMicMuted : (existing?.isMicMuted ?? false),
+            isTyping: existing?.isTyping ?? false,
+            displayName: payload.senderName || existing?.displayName || remotePId,
+          });
+          bumpPeers();
         } else if (payload.type === "chat" && payload.message) {
           const msg: ChatMessage = {
             id: payload.id || `msg-${Date.now()}`,
             sender: "remote",
+            senderName: payload.senderName || remotePId,
             text: payload.message,
             timestamp:
               payload.timestamp ||
@@ -493,17 +540,71 @@ export function useWebRTC(
           };
           setChatMessages((prev) => [...prev, msg]);
         } else if (payload.type === "typing") {
-          setIsRemoteTyping(true);
+          const existing = remotePeersMapRef.current.get(remotePId);
+          if (existing) {
+            existing.isTyping = true;
+            bumpPeers();
+          }
         } else if (payload.type === "stop_typing") {
-          setIsRemoteTyping(false);
+          const existing = remotePeersMapRef.current.get(remotePId);
+          if (existing) {
+            existing.isTyping = false;
+            bumpPeers();
+          }
+        } else if (payload.type === "room_announce" || payload.type === "room_peers") {
+          // Mesh discovery: connect to any peers we don't know about yet
+          const discoveredPeers = payload.knownPeers || [];
+          const myId = peerRef.current?.id;
+          if (myId && discoveredPeers.length > 0) {
+            for (const pid of discoveredPeers) {
+              if (
+                pid !== myId &&
+                !remotePeersMapRef.current.has(pid) &&
+                !connectingToPeersRef.current.has(pid) &&
+                remotePeersMapRef.current.size < MAX_PARTICIPANTS - 1
+              ) {
+                // Glare avoidance: higher ID initiates connection
+                if (myId.localeCompare(pid) > 0) {
+                  console.log(`[Mesh Discovery] Higher ID initiates call to ${pid}`);
+                  connectingToPeersRef.current.add(pid);
+                  setTimeout(() => {
+                    connectToPeerRef.current(pid);
+                  }, 400 + Math.random() * 400);
+                } else {
+                  // Fallback: if after 4 seconds lower ID still not called, lower ID attempts
+                  setTimeout(() => {
+                    if (
+                      !remotePeersMapRef.current.has(pid) &&
+                      !connectingToPeersRef.current.has(pid) &&
+                      remotePeersMapRef.current.size < MAX_PARTICIPANTS - 1
+                    ) {
+                      console.log(`[Mesh Discovery] Fallback initiating call to ${pid}`);
+                      connectingToPeersRef.current.add(pid);
+                      connectToPeerRef.current(pid);
+                    }
+                  }, 3500 + Math.random() * 500);
+                }
+              }
+            }
+          }
+
+          // Update display name
+          if (payload.senderName) {
+            const existing = remotePeersMapRef.current.get(remotePId);
+            if (existing) {
+              existing.displayName = payload.senderName;
+              bumpPeers();
+            }
+          }
         }
       });
 
       conn.on("close", () => {
-        console.log("[DataChannel] Closed");
+        console.log(`[DataChannel] Closed with ${remotePId}`);
+        dataConnsRef.current.delete(remotePId);
       });
     },
-    [isCamOff, isMicMuted, sendMediaState]
+    [bumpPeers]
   );
 
   /* ---------------------------------------------------------------- */
@@ -514,9 +615,29 @@ export function useWebRTC(
     (targetPeerId: string) => {
       const peer = peerRef.current;
       if (!peer || peer.destroyed) return;
-      if (mediaConnRef.current && (mediaConnRef.current as any).open) return;
+      if (remotePeersMapRef.current.size >= MAX_PARTICIPANTS - 1) {
+        console.log("[WebRTC] Max participants reached, ignoring new connection.");
+        return;
+      }
 
-      setRemotePeerId(targetPeerId);
+      // Skip if already have active connection to this peer
+      const existingMedia = mediaConnsRef.current.get(targetPeerId);
+      if (existingMedia && (existingMedia as any).open) return;
+
+      // Ensure the remote peer entry exists
+      if (!remotePeersMapRef.current.has(targetPeerId)) {
+        remotePeersMapRef.current.set(targetPeerId, {
+          peerId: targetPeerId,
+          stream: null,
+          isCamOff: false,
+          isMicMuted: false,
+          isTyping: false,
+          displayName: targetPeerId,
+        });
+        bumpPeers();
+      }
+
+      connectingToPeersRef.current.add(targetPeerId);
 
       try {
         // Establish data channel first
@@ -532,10 +653,123 @@ export function useWebRTC(
         }
       } catch (err) {
         console.log("[PeerJS connect error]", err);
+        connectingToPeersRef.current.delete(targetPeerId);
       }
     },
-    [handleMediaConnection, handleDataConnection]
+    [handleMediaConnection, handleDataConnection, bumpPeers]
   );
+
+  // Keep the ref in sync for mesh discovery callback
+  connectToPeerRef.current = connectToPeer;
+
+  /* ---------------------------------------------------------------- */
+  /*  Initialize Peer & listen for incoming calls                      */
+  /* ---------------------------------------------------------------- */
+
+  const initPeer = useCallback((customId?: string) => {
+    const id = customId || options.customPeerId || generatePeerId(roomId, role);
+
+    const peer = new Peer(id, {
+      debug: 1,
+      config: {
+        iceServers: [
+          // STUN: Fast, reliable global Google & Twilio STUN cluster
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+          { urls: "stun:stun2.l.google.com:19302" },
+          { urls: "stun:stun3.l.google.com:19302" },
+          { urls: "stun:stun4.l.google.com:19302" },
+          { urls: "stun:global.stun.twilio.com:3478" },
+          { urls: "stun:stun.services.mozilla.com" },
+
+          // Optional custom production TURN credentials via environment variables:
+          ...(typeof process !== "undefined" && process.env?.NEXT_PUBLIC_TURN_URL
+            ? [
+                {
+                  urls: process.env.NEXT_PUBLIC_TURN_URL.split(","),
+                  username: process.env.NEXT_PUBLIC_TURN_USERNAME || "",
+                  credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL || "",
+                },
+              ]
+            : []),
+        ],
+        iceCandidatePoolSize: 10,
+        iceTransportPolicy: "all" as RTCIceTransportPolicy,
+      },
+    });
+
+    peer.on("open", (openId) => {
+      setPeerId(openId);
+      setConnectionState("waiting");
+    });
+
+    peer.on("error", (err) => {
+      console.error("[PeerJS Error]", err);
+      if (err.type === "unavailable-id") {
+        console.warn("[PeerJS] ID taken, generating alternate ID...");
+        const altId = `${id}-${Math.random().toString(36).slice(2, 6)}`;
+        peer.destroy();
+        setTimeout(() => {
+          initPeer(altId);
+        }, 800);
+        return;
+      }
+      if (err.type === "peer-unavailable") {
+        // Expected when other peer has not yet connected; do not set error
+        console.log("[PeerJS] Remote peer not yet online; waiting...");
+      } else if (err.type === "network" || err.type === "server-error") {
+        // Signaling server connection dropped; attempt background socket reconnect
+        setTimeout(() => {
+          if (peerRef.current && !peerRef.current.destroyed && !peerRef.current.open) {
+            peerRef.current.reconnect();
+          }
+        }, 3000);
+      } else {
+        console.warn(`[PeerJS Notice] ${err.message}`);
+      }
+    });
+
+    peer.on("disconnected", () => {
+      // Signaling socket lost, but P2P media stream is direct and often still running!
+      console.log("[PeerJS] Signaling server socket disconnected, reconnecting in background...");
+      setTimeout(() => {
+        if (peerRef.current && !peerRef.current.destroyed && !peerRef.current.open) {
+          peerRef.current.reconnect();
+        }
+      }, 1500);
+    });
+
+    // Listen for incoming calls — accept from any peer up to MAX_PARTICIPANTS
+    peer.on("call", (call) => {
+      const incomingPeerId = call.peer;
+
+      // Check participant limit
+      if (remotePeersMapRef.current.size >= MAX_PARTICIPANTS - 1) {
+        console.log(`[PeerJS] Max participants reached, rejecting call from ${incomingPeerId}`);
+        return;
+      }
+
+      // If we already have an active call to this peer, ignore duplicate
+      const existingMedia = mediaConnsRef.current.get(incomingPeerId);
+      if (existingMedia && (existingMedia as any).open && existingMedia !== call) {
+        console.log(`[PeerJS] Already connected to ${incomingPeerId}, ignoring duplicate incoming call`);
+        return;
+      }
+
+      setConnectionState("connecting");
+      // Answer with our local stream
+      call.answer(localStreamRef.current || undefined);
+      handleMediaConnection(call);
+    });
+
+    // Listen for incoming data connections
+    peer.on("connection", (conn) => {
+      handleDataConnection(conn);
+    });
+
+    peerRef.current = peer;
+    return peer;
+  }, [roomId, role, options.customPeerId]);
 
   /* ---------------------------------------------------------------- */
   /*  Toggle mic / camera                                              */
@@ -591,14 +825,15 @@ export function useWebRTC(
         }
         localStreamRef.current.addTrack(newVideoTrack);
 
-        if (mediaConnRef.current) {
-          const sender = (mediaConnRef.current as any).peerConnection
+        // Replace track in ALL peer connections
+        mediaConnsRef.current.forEach((mediaConn) => {
+          const sender = (mediaConn as any).peerConnection
             ?.getSenders()
             ?.find((s: RTCRtpSender) => s.track?.kind === "video");
           if (sender) {
-            await sender.replaceTrack(newVideoTrack);
+            sender.replaceTrack(newVideoTrack).catch(() => {});
           }
-        }
+        });
 
         setLocalStream(new MediaStream(localStreamRef.current.getTracks()));
       }
@@ -622,17 +857,16 @@ export function useWebRTC(
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
       }
-      if (
-        originalVideoTrackRef.current &&
-        localStreamRef.current &&
-        mediaConnRef.current
-      ) {
-        const sender = (mediaConnRef.current as any).peerConnection
-          ?.getSenders()
-          ?.find((s: RTCRtpSender) => s.track?.kind === "video");
-        if (sender) {
-          await sender.replaceTrack(originalVideoTrackRef.current);
-        }
+      if (originalVideoTrackRef.current && localStreamRef.current) {
+        // Replace track in ALL peer connections
+        mediaConnsRef.current.forEach((mediaConn) => {
+          const sender = (mediaConn as any).peerConnection
+            ?.getSenders()
+            ?.find((s: RTCRtpSender) => s.track?.kind === "video");
+          if (sender && originalVideoTrackRef.current) {
+            sender.replaceTrack(originalVideoTrackRef.current).catch(() => {});
+          }
+        });
       }
       setIsScreenSharing(false);
       return;
@@ -655,16 +889,16 @@ export function useWebRTC(
           localStreamRef.current.getVideoTracks()[0] || null;
       }
 
-      // Replace the video track in the peer connection
+      // Replace the video track in ALL peer connections
       const screenTrack = screenStream.getVideoTracks()[0]!;
-      if (mediaConnRef.current) {
-        const sender = (mediaConnRef.current as any).peerConnection
+      mediaConnsRef.current.forEach((mediaConn) => {
+        const sender = (mediaConn as any).peerConnection
           ?.getSenders()
           ?.find((s: RTCRtpSender) => s.track?.kind === "video");
         if (sender) {
-          await sender.replaceTrack(screenTrack);
+          sender.replaceTrack(screenTrack).catch(() => {});
         }
-      }
+      });
 
       // When user stops sharing via browser UI
       screenTrack.onended = () => {
@@ -686,7 +920,7 @@ export function useWebRTC(
 
   const sendChatMessage = useCallback(
     (text: string) => {
-      if (!dataConnRef.current || !text.trim()) return;
+      if (dataConnsRef.current.size === 0 || !text.trim()) return;
 
       const timestamp = new Date().toLocaleTimeString([], {
         hour: "2-digit",
@@ -699,30 +933,30 @@ export function useWebRTC(
         message: text.trim(),
         timestamp,
         id,
+        senderName: displayNameRef.current,
       };
-      dataConnRef.current.send(payload);
+      broadcastData(payload);
 
       const msg: ChatMessage = {
         id,
         sender: "local",
+        senderName: displayNameRef.current,
         text: text.trim(),
         timestamp,
         status: "sent",
       };
       setChatMessages((prev) => [...prev, msg]);
     },
-    []
+    [broadcastData]
   );
 
   const sendTypingIndicator = useCallback((isTyping: boolean) => {
-    if (!dataConnRef.current) return;
     const payload: DataPayload = {
       type: isTyping ? "typing" : "stop_typing",
+      senderName: displayNameRef.current,
     };
-    dataConnRef.current.send(payload);
-  }, []);
-
-
+    broadcastData(payload);
+  }, [broadcastData]);
 
   /* ---------------------------------------------------------------- */
   /*  Disconnect & cleanup                                             */
@@ -737,26 +971,37 @@ export function useWebRTC(
       screenStreamRef.current = null;
     }
 
-    if (mediaConnRef.current) {
-      mediaConnRef.current.close();
-      mediaConnRef.current = null;
-    }
+    // Close all media connections
+    mediaConnsRef.current.forEach((conn) => {
+      try { conn.close(); } catch {}
+    });
+    mediaConnsRef.current.clear();
 
-    if (dataConnRef.current) {
-      dataConnRef.current.close();
-      dataConnRef.current = null;
-    }
+    // Close all data connections
+    dataConnsRef.current.forEach((conn) => {
+      try { conn.close(); } catch {}
+    });
+    dataConnsRef.current.clear();
+
+    // Clear grace timeouts
+    disconnectGraceTimeoutsRef.current.forEach((timeout) => clearTimeout(timeout));
+    disconnectGraceTimeoutsRef.current.clear();
+
+    // Clear connecting set
+    connectingToPeersRef.current.clear();
+
+    // Clear remote peers
+    remotePeersMapRef.current.clear();
+    bumpPeers();
 
     if (peerRef.current) {
       peerRef.current.destroy();
       peerRef.current = null;
     }
 
-    setRemoteStream(null);
-    setRemotePeerId(null);
     setConnectionState("disconnected");
     setIsScreenSharing(false);
-  }, [stopCallTimer, stopNetworkMonitor]);
+  }, [stopCallTimer, stopNetworkMonitor, bumpPeers]);
 
   /* ---------------------------------------------------------------- */
   /*  Initialize peer on mount, cleanup on unmount                     */
@@ -785,14 +1030,21 @@ export function useWebRTC(
   useEffect(() => {
     if (options.disableAutoConnect) return;
     if (connectionState !== "waiting" || !localStream) return;
-    if (mediaConnRef.current && (mediaConnRef.current as any).open) return;
 
-    const targetId =
-      options.targetPeerId ||
-      `smrko-${sanitizeId(roomId)}-${role === "doctor" ? "patient" : "doctor"}`;
+    // Don't auto-connect if we already have connections
+    if (remotePeersMapRef.current.size > 0) return;
 
-    // Doctor initiates immediately; Patient waits 6s as fallback to prevent call glare
-    const initialDelay = role === "doctor" ? 600 : 6000;
+    const targets = options.targetPeerId
+      ? [options.targetPeerId]
+      : role === "guest"
+      ? [
+          `smrko-${sanitizeId(roomId)}-doctor`,
+          `smrko-${sanitizeId(roomId)}-patient`,
+        ]
+      : [`smrko-${sanitizeId(roomId)}-${role === "doctor" ? "patient" : "doctor"}`];
+
+    // Doctor & Guest initiate quickly; Patient waits 6s as fallback to prevent call glare
+    const initialDelay = role === "patient" ? 6000 : 700;
 
     let timer: NodeJS.Timeout | null = null;
     const initial = setTimeout(() => {
@@ -800,9 +1052,9 @@ export function useWebRTC(
         peerRef.current &&
         !peerRef.current.destroyed &&
         connectionState === "waiting" &&
-        !mediaConnRef.current
+        remotePeersMapRef.current.size === 0
       ) {
-        connectToPeer(targetId);
+        targets.forEach((t) => connectToPeer(t));
       }
 
       timer = setInterval(() => {
@@ -810,9 +1062,9 @@ export function useWebRTC(
           peerRef.current &&
           !peerRef.current.destroyed &&
           connectionState === "waiting" &&
-          !mediaConnRef.current
+          remotePeersMapRef.current.size === 0
         ) {
-          connectToPeer(targetId);
+          targets.forEach((t) => connectToPeer(t));
         }
       }, 4000);
     }, initialDelay);
@@ -832,34 +1084,43 @@ export function useWebRTC(
   ]);
 
   /* ---------------------------------------------------------------- */
-  /*  Manual Restart Connection (Re-sync stream & ICE restart)          */
+  /*  Manual Restart Connection                                        */
   /* ---------------------------------------------------------------- */
 
   const restartConnection = useCallback(() => {
     console.log("[WebRTC] Clean reconnect triggered...");
     setConnectionState("reconnecting");
-    if (mediaConnRef.current) {
-      try {
-        mediaConnRef.current.close();
-      } catch (e) {
-        console.warn("[restartConnection] Error closing old mediaConn:", e);
-      }
-      mediaConnRef.current = null;
-    }
+
+    // Close all media connections
+    mediaConnsRef.current.forEach((conn) => {
+      try { conn.close(); } catch {}
+    });
+    mediaConnsRef.current.clear();
+    connectingToPeersRef.current.clear();
+
+    // Reconnect to all known peers after a brief delay
+    const knownPeerIds = Array.from(remotePeersMapRef.current.keys());
     const targetId =
-      remotePeerId ||
       options.targetPeerId ||
       `smrko-${sanitizeId(roomId)}-${role === "doctor" ? "patient" : "doctor"}`;
-    if (targetId && peerRef.current && !peerRef.current.destroyed) {
+
+    const peersToReconnect = knownPeerIds.length > 0 ? knownPeerIds : [targetId];
+
+    if (peerRef.current && !peerRef.current.destroyed) {
       setTimeout(() => {
-        connectToPeer(targetId);
+        peersToReconnect.forEach((pid, i) => {
+          setTimeout(() => {
+            connectToPeer(pid);
+          }, i * 300);
+        });
       }, 400);
     }
-  }, [remotePeerId, options.targetPeerId, roomId, role, connectToPeer]);
+  }, [options.targetPeerId, roomId, role, connectToPeer]);
 
   return {
     localStream,
     remoteStream,
+    remotePeers,
     connectionState,
     networkQuality,
     isMicMuted,
@@ -874,6 +1135,7 @@ export function useWebRTC(
     remotePeerId,
     error,
     facingMode,
+    participantCount,
     startLocalMedia,
     stopLocalMedia,
     connectToPeer,

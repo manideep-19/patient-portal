@@ -11,6 +11,7 @@ import {
   MonitorUp,
   MonitorOff,
   MessageSquare,
+  UserPlus,
 } from "lucide-react";
 
 interface CallControlsProps {
@@ -24,6 +25,7 @@ interface CallControlsProps {
   onToggleScreenShare: () => void;
   onToggleChat: () => void;
   onSwitchCamera: () => void;
+  onInvite?: () => void;
   onEndCall: () => void;
 }
 
@@ -38,6 +40,7 @@ export function CallControls({
   onToggleScreenShare,
   onToggleChat,
   onSwitchCamera,
+  onInvite,
   onEndCall,
 }: CallControlsProps) {
   return (
@@ -99,6 +102,18 @@ export function CallControls({
           title="Switch Camera (Front/Rear)"
           onClick={onSwitchCamera}
         />
+
+        {/* Invite / Add People */}
+        {onInvite && (
+          <ControlButton
+            active={false}
+            icon={<UserPlus className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-brand" />}
+            label="Add Participants"
+            title="Invite Specialist or Family Member to Call"
+            onClick={onInvite}
+            activeClass="bg-brand text-white shadow-soft"
+          />
+        )}
 
         {/* Chat Toggle */}
         <div className="relative">

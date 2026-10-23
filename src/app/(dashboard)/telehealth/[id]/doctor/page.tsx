@@ -25,6 +25,8 @@ import {
   CheckCircle2,
   RefreshCw,
   ExternalLink,
+  UserPlus,
+  Users,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
@@ -32,6 +34,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useWebRTC } from "@/lib/use-webrtc";
 import { VideoPlayer } from "@/components/telehealth/video-player";
+import { VideoGrid } from "@/components/telehealth/video-grid";
+import { InviteModal } from "@/components/telehealth/invite-modal";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
 import { usePatient } from "@/context/patient-context";
 
@@ -65,6 +69,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
     "Patient reporting good progress. Follicular scan within normal limits. Recommended continuation of current dosage with review in 7 days."
   );
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [hasAttemptedConnect, setHasAttemptedConnect] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
@@ -196,7 +201,18 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
         </div>
 
         {/* Right Header Status */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5">
+          {/* Invite / Add Participants */}
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setIsInviteModalOpen(true)}
+            className="h-8 gap-1.5 bg-slate-800 border-slate-700 text-xs text-slate-200 hover:text-white"
+          >
+            <UserPlus className="w-3.5 h-3.5 text-brand" />
+            <span>Invite / Add ({rtc.participantCount}/4)</span>
+          </Button>
+
           <div className="hidden md:flex items-center gap-2 text-xs text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700">
             <ShieldCheck className="w-3.5 h-3.5 text-success" />
             <span>HIPAA Compliant P2P WebRTC</span>
@@ -204,7 +220,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
           {rtc.connectionState === "connected" ? (
             <Badge variant="success" size="sm" className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <span>In Consultation</span>
+              <span>{rtc.participantCount > 2 ? `Group Call (${rtc.participantCount})` : "In Consultation"}</span>
             </Badge>
           ) : (
             <Badge variant="outline" size="sm" className="text-amber-400 border-amber-400/30">
@@ -259,16 +275,17 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
         {/* Left: Video Area */}
         <div className="flex-1 flex flex-col relative bg-slate-950 overflow-hidden">
-          {/* Main Video: Patient's Stream */}
+          {/* Main Video: Multi-Party Video Grid */}
           <div className="relative flex-1 w-full h-full flex items-center justify-center bg-slate-950">
-            {rtc.remoteStream ? (
-              <VideoPlayer
-                stream={rtc.remoteStream}
-                isCamOff={rtc.isRemoteCamOff}
-                className="w-full h-full"
-                label={`${patientName} (Patient Live)`}
-                objectFit="contain"
+            {rtc.remotePeers.length > 0 ? (
+              <VideoGrid
+                localStream={rtc.localStream}
+                localLabel="Dr. Sharma"
+                localMirror={false}
+                localCamOff={rtc.isCamOff}
+                remotePeers={rtc.remotePeers}
                 onRetry={rtc.restartConnection}
+                className="w-full h-full"
               />
             ) : (
               <div className="flex flex-col items-center justify-center p-8 text-center max-w-md space-y-4">
@@ -281,7 +298,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                   </h3>
                   <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
                     Make sure the patient has the consultation room open in another tab
-                    or on their mobile device.
+                    or on their mobile device. You can also invite other specialists or family members.
                   </p>
                 </div>
                 <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
@@ -293,6 +310,15 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                   >
                     <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
                     Retry Connection
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="primary"
+                    onClick={() => setIsInviteModalOpen(true)}
+                    className="text-xs"
+                  >
+                    <UserPlus className="w-3.5 h-3.5 mr-1.5" />
+                    Invite Others
                   </Button>
                   <a
                     href={`/telehealth/${resolvedParams.id}`}
@@ -307,24 +333,26 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
               </div>
             )}
 
-            {/* Doctor Self-Preview PiP (Bottom Right of Video) */}
-            <div className="absolute bottom-20 right-4 z-20 w-36 sm:w-44 aspect-video rounded-2xl border-2 border-slate-700/80 shadow-2xl overflow-hidden bg-slate-900">
-              {rtc.isCamOff ? (
-                <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[10px]">
-                  <VideoOff className="w-5 h-5 mb-1" />
-                  <span>Doctor Cam Off</span>
-                </div>
-              ) : (
-                <VideoPlayer
-                  stream={rtc.localStream}
-                  muted
-                  mirror
-                  className="w-full h-full"
-                  label="Dr. Sharma (You)"
-                  objectFit="cover"
-                />
-              )}
-            </div>
+            {/* Doctor Self-Preview PiP — only rendered when exactly 1 remote is connected (2-person mode) */}
+            {rtc.remotePeers.length === 1 && (
+              <div className="absolute bottom-20 right-4 z-20 w-36 sm:w-44 aspect-video rounded-2xl border-2 border-slate-700/80 shadow-2xl overflow-hidden bg-slate-900">
+                {rtc.isCamOff ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[10px]">
+                    <VideoOff className="w-5 h-5 mb-1" />
+                    <span>Doctor Cam Off</span>
+                  </div>
+                ) : (
+                  <VideoPlayer
+                    stream={rtc.localStream}
+                    muted
+                    mirror
+                    className="w-full h-full"
+                    label="Dr. Sharma (You)"
+                    objectFit="cover"
+                  />
+                )}
+              </div>
+            )}
           </div>
 
           {/* Doctor Controls Dock */}
@@ -375,6 +403,15 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                 title="Share Medical Report / Screen"
               >
                 <MonitorUp className="w-4 h-4" />
+              </button>
+
+              {/* Invite / Add Participants */}
+              <button
+                onClick={() => setIsInviteModalOpen(true)}
+                className="p-3 rounded-full transition-colors cursor-pointer bg-slate-800 text-brand hover:bg-slate-700"
+                title="Add Specialists or Family Members (Up to 4 participants)"
+              >
+                <UserPlus className="w-4 h-4" />
               </button>
             </div>
 
@@ -623,6 +660,15 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
           </div>
         </div>
       )}
+
+      {/* Invite Modal */}
+      <InviteModal
+        isOpen={isInviteModalOpen}
+        onClose={() => setIsInviteModalOpen(false)}
+        roomId={resolvedParams.id}
+        participantCount={rtc.participantCount}
+        maxParticipants={4}
+      />
     </div>
   );
 }

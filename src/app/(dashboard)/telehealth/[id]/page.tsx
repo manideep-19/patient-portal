@@ -24,6 +24,8 @@ import {
   MessageSquare,
   X,
   ArrowRight,
+  UserPlus,
+  Users,
 } from "lucide-react";
 import { usePatient } from "@/context/patient-context";
 import { Button } from "@/components/ui/button";
@@ -32,6 +34,8 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useWebRTC, type ConnectionState, type ChatMessage } from "@/lib/use-webrtc";
 import { VideoPlayer } from "@/components/telehealth/video-player";
+import { VideoGrid } from "@/components/telehealth/video-grid";
+import { InviteModal } from "@/components/telehealth/invite-modal";
 import { CallControls } from "@/components/telehealth/call-controls";
 import { ChatPanel } from "@/components/telehealth/chat-panel";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
@@ -64,14 +68,22 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [latestDoctorMessage, setLatestDoctorMessage] = useState<ChatMessage | null>(null);
   const prevMessagesCountRef = useRef(0);
 
+  // Check if joining as a guest / specialist / family member
+  const roleParam = searchParams.get("role");
+  const isGuest = roleParam === "guest" || searchParams.get("guest") === "true";
+  const guestName = searchParams.get("name") || (isGuest ? "Guest Participant" : patient.name);
+  const currentDisplayName = isGuest ? guestName : patient.name;
+  const currentRole: "patient" | "guest" = isGuest ? "guest" : "patient";
+
   // WebRTC hook
   const rtc = useWebRTC(resolvedParams.id, {
-    role: "patient",
-    displayName: patient.name,
+    role: currentRole,
+    displayName: currentDisplayName,
   });
 
   const doctorName = appointment?.doctorName || "Dr. Sunita Sharma";
@@ -100,11 +112,11 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   useEffect(() => {
     if (rtc.connectionState === "connected" && pageState === "prejoin") {
       setPageState("in_call");
-      toast.success(`Connected to ${doctorName}`, {
+      toast.success(`Connected — ${rtc.participantCount} in call`, {
         description: "Encrypted HD teleconsultation active.",
       });
     }
-  }, [rtc.connectionState, pageState, doctorName]);
+  }, [rtc.connectionState, pageState, rtc.participantCount]);
 
   // Track unread chat messages & alert on incoming doctor messages
   useEffect(() => {
@@ -481,16 +493,17 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   // -----------------------------------------------------------------
   return (
     <div className="relative h-[100dvh] w-full bg-ink text-white overflow-hidden select-none">
-      {/* 1. Main Background Video (Doctor's Remote Stream) */}
+      {/* 1. Main Video Area — Multi-Party Grid */}
       <div className="absolute inset-0 w-full h-full z-0 overflow-hidden bg-slate-950">
-        {rtc.remoteStream ? (
-          <VideoPlayer
-            stream={rtc.remoteStream}
-            isCamOff={rtc.isRemoteCamOff}
-            className="w-full h-full"
-            label={`${doctorName} (Doctor)`}
-            objectFit="cover"
+        {rtc.remotePeers.length > 0 ? (
+          <VideoGrid
+            localStream={rtc.localStream}
+            localLabel={patient.name}
+            localMirror={rtc.facingMode === "user"}
+            localCamOff={rtc.isCamOff}
+            remotePeers={rtc.remotePeers}
             onRetry={rtc.restartConnection}
+            className="w-full h-full"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-ink gap-3 text-center p-6">
@@ -501,7 +514,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               className="ring-4 ring-brand/40 animate-pulse-subtle"
             />
             <h3 className="text-lg font-bold">{doctorName}</h3>
-            <p className="text-xs text-white/60">Waiting for doctor&apos;s live video...</p>
+            <p className="text-xs text-white/60">Waiting for others to join...</p>
             <div className="pt-2 flex flex-col items-center gap-2">
               <a
                 href={doctorUrl}
@@ -529,9 +542,9 @@ export default function TelehealthRoomPage({ params }: PageProps) {
           <Avatar name={doctorName} src={doctorAvatar} size="sm" className="ring-2 ring-brand" />
           <div>
             <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-              <span>{doctorName}</span>
+              <span>{rtc.participantCount > 2 ? `Group Call` : doctorName}</span>
               <Badge variant="success" size="sm" className="text-[10px] py-0 px-1.5">
-                Live
+                {rtc.participantCount} in call
               </Badge>
             </div>
             <div className="text-[11px] text-white/70 flex items-center gap-2">
@@ -553,6 +566,16 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               <span className="hidden sm:inline">Sharing Screen</span>
             </div>
           )}
+
+          {/* Invite / Add Participant Button */}
+          <button
+            onClick={() => setIsInviteModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold backdrop-blur-md transition-colors cursor-pointer border border-white/10"
+            title="Invite Specialist or Family Member (Up to 4 participants)"
+          >
+            <UserPlus className="w-3.5 h-3.5 text-brand" />
+            <span>Invite ({rtc.participantCount}/4)</span>
+          </button>
 
           {/* Quick Chat Button in Top Bar */}
           <button
@@ -644,46 +667,48 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         </div>
       )}
 
-      {/* 5. Patient Self-View PiP */}
-      <div className="absolute bottom-28 right-4 sm:bottom-28 sm:right-6 z-30 w-36 sm:w-48 aspect-video rounded-2xl border-2 border-white/20 shadow-2xl overflow-hidden bg-black/85 backdrop-blur-md group">
-        {rtc.isCamOff ? (
-          <div className="w-full h-full bg-black/80 flex flex-col items-center justify-center text-white/50 text-[10px]">
-            <VideoOff className="w-5 h-5 mb-0.5 text-destructive" />
-            <span>Cam Off</span>
-          </div>
-        ) : (
-          <VideoPlayer
-            stream={rtc.localStream}
-            muted
-            mirror={rtc.facingMode === "user"}
-            className="w-full h-full"
-            label="You"
-            objectFit="cover"
-          />
-        )}
+      {/* 5. Patient Self-View PiP — only show in 2-person mode (VideoGrid handles 3-4 person layout) */}
+      {rtc.remotePeers.length === 1 && (
+        <div className="absolute bottom-28 right-4 sm:bottom-28 sm:right-6 z-30 w-36 sm:w-48 aspect-video rounded-2xl border-2 border-white/20 shadow-2xl overflow-hidden bg-black/85 backdrop-blur-md group">
+          {rtc.isCamOff ? (
+            <div className="w-full h-full bg-black/80 flex flex-col items-center justify-center text-white/50 text-[10px]">
+              <VideoOff className="w-5 h-5 mb-0.5 text-destructive" />
+              <span>Cam Off</span>
+            </div>
+          ) : (
+            <VideoPlayer
+              stream={rtc.localStream}
+              muted
+              mirror={rtc.facingMode === "user"}
+              className="w-full h-full"
+              label="You"
+              objectFit="cover"
+            />
+          )}
 
-        {/* Quick PiP action controls */}
-        <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 z-10">
-          <button
-            onClick={rtc.toggleMic}
-            className={`p-1 rounded-full transition-colors cursor-pointer ${
-              rtc.isMicMuted ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-            }`}
-            title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
-          >
-            {rtc.isMicMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 text-emerald-400" />}
-          </button>
-          <button
-            onClick={rtc.toggleCamera}
-            className={`p-1 rounded-full transition-colors cursor-pointer ${
-              rtc.isCamOff ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-            }`}
-            title={rtc.isCamOff ? "Turn On Camera" : "Turn Off Camera"}
-          >
-            {rtc.isCamOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3 text-emerald-400" />}
-          </button>
+          {/* Quick PiP action controls */}
+          <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 z-10">
+            <button
+              onClick={rtc.toggleMic}
+              className={`p-1 rounded-full transition-colors cursor-pointer ${
+                rtc.isMicMuted ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
+              }`}
+              title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
+            >
+              {rtc.isMicMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 text-emerald-400" />}
+            </button>
+            <button
+              onClick={rtc.toggleCamera}
+              className={`p-1 rounded-full transition-colors cursor-pointer ${
+                rtc.isCamOff ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
+              }`}
+              title={rtc.isCamOff ? "Turn On Camera" : "Turn Off Camera"}
+            >
+              {rtc.isCamOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3 text-emerald-400" />}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 6. Chat Panel */}
       <ChatPanel
@@ -721,6 +746,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
             }
           }}
           onSwitchCamera={handleSwitchCamera}
+          onInvite={() => setIsInviteModalOpen(true)}
           onEndCall={() => setShowEndConfirm(true)}
         />
       </div>
@@ -762,6 +788,15 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         roomId={resolvedParams.id}
         doctorName={doctorName}
         patientName={patient.name}
+      />
+
+      {/* 10. Multi-Party Invite Modal */}
+      <InviteModal
+        isOpen={isInviteModalOpen}
+        onClose={() => setIsInviteModalOpen(false)}
+        roomId={resolvedParams.id}
+        participantCount={rtc.participantCount}
+        maxParticipants={4}
       />
     </div>
   );
