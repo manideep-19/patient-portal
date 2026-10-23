@@ -377,17 +377,15 @@ export default function TelehealthRoomPage({ params }: PageProps) {
             <div className="flex gap-2">
               <a
                 href={doctorUrl}
-                target="_blank"
-                rel="noreferrer"
                 className="flex-1 py-2 px-3 rounded-xl bg-brand/20 hover:bg-brand/30 text-brand-soft border border-brand/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open Doctor Simulator</span>
+                <span>Join as Doctor / Provider</span>
               </a>
               <button
                 onClick={handleCopyDoctorLink}
                 className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 text-xs transition-colors cursor-pointer"
-                title="Copy Doctor Link"
+                title="Copy Doctor Invite Link"
               >
                 <Copy className="w-3.5 h-3.5" />
               </button>
