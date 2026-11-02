@@ -32,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useWebRTC, type ConnectionState, type ChatMessage } from "@/lib/use-webrtc";
 import { VideoPlayer } from "@/components/telehealth/video-player";
+import { MultiVideoGrid } from "@/components/telehealth/multi-video-grid";
 import { CallControls } from "@/components/telehealth/call-controls";
 import { ChatPanel } from "@/components/telehealth/chat-panel";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
@@ -44,20 +45,19 @@ interface PageProps {
 
 type PageState = "prejoin" | "in_call" | "ended";
 
-export default function TelehealthRoomPage({ params }: PageProps) {
-  const resolvedParams = use(params);
+function TelehealthRoomContent({ id }: { id: string }) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { getAppointmentById, patient } = usePatient();
 
-  const appointment = getAppointmentById(resolvedParams.id);
+  const appointment = getAppointmentById(id);
 
   // If role is doctor, redirect to doctor console immediately
   useEffect(() => {
     if (searchParams.get("role") === "doctor") {
-      router.replace(`/telehealth/${resolvedParams.id}/doctor`);
+      router.replace(`/telehealth/${id}/doctor`);
     }
-  }, [searchParams, resolvedParams.id, router]);
+  }, [searchParams, id, router]);
 
   // Page-level state
   const [pageState, setPageState] = useState<PageState>("prejoin");
@@ -69,7 +69,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   const prevMessagesCountRef = useRef(0);
 
   // WebRTC hook
-  const rtc = useWebRTC(resolvedParams.id, {
+  const rtc = useWebRTC(id, {
     role: "patient",
     displayName: patient.name,
   });
@@ -148,12 +148,10 @@ export default function TelehealthRoomPage({ params }: PageProps) {
     });
   };
 
-  const doctorUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/telehealth/${resolvedParams.id}/doctor${
-          rtc.peerId ? `?patientPeerId=${encodeURIComponent(rtc.peerId)}` : ""
-        }`
-      : `/telehealth/${resolvedParams.id}/doctor`;
+  const doctorPath = `/telehealth/${id}/doctor${
+    rtc.peerId ? `?patientPeerId=${encodeURIComponent(rtc.peerId)}` : ""
+  }`;
+  const doctorUrl = doctorPath;
 
   // Handle join call
   const handleJoinCall = () => {
@@ -174,13 +172,15 @@ export default function TelehealthRoomPage({ params }: PageProps) {
 
   // Copy doctor link
   const handleCopyDoctorLink = () => {
-    if (doctorUrl) {
-      navigator.clipboard.writeText(doctorUrl).then(() => {
-        toast.success("Doctor link copied!", {
-          description: "Open this link in another tab to simulate the doctor joining.",
-        });
+    const fullUrl =
+      typeof window !== "undefined"
+        ? `${window.location.origin}${doctorPath}`
+        : doctorPath;
+    navigator.clipboard.writeText(fullUrl).then(() => {
+      toast.success("Doctor link copied!", {
+        description: "Open this link in another tab to simulate the doctor joining.",
       });
-    }
+    });
   };
 
   // Handle camera switch
@@ -344,7 +344,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               <div className="text-[11px] text-white/50 mb-1">Room ID (for testing)</div>
               <div className="flex items-center gap-2">
                 <code className="flex-1 text-xs text-brand-soft font-mono truncate">
-                  {rtc.peerId || `smrko-${resolvedParams.id}-patient (connecting...)`}
+                  {rtc.peerId || `smrko-${id}-patient (connecting...)`}
                 </code>
                 <button
                   onClick={handleCopyRoomId}
@@ -465,14 +465,31 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   // -----------------------------------------------------------------
   return (
     <div className="relative h-[100dvh] w-full bg-ink text-white overflow-hidden select-none">
-      {/* 1. Main Background Video (Doctor's Remote Stream) */}
+      {/* 1. Main Background Video (Multi-Party Grid or 1:1 Remote Stream) */}
       <div className="absolute inset-0 w-full h-full z-0 overflow-hidden bg-slate-950">
-        {rtc.remoteStream ? (
+        {rtc.remotePeers.length > 1 ? (
+          <MultiVideoGrid
+            localStream={rtc.localStream}
+            remotePeers={rtc.remotePeers}
+            isLocalCamOff={rtc.isCamOff}
+            isLocalMicMuted={rtc.isMicMuted}
+            isVideoPausedForNetwork={rtc.isVideoPausedForNetwork}
+            selfName={patient.name}
+            selfRole="patient"
+            onToggleLocalMic={rtc.toggleMic}
+            onToggleLocalCam={rtc.toggleCamera}
+          />
+        ) : rtc.remoteStream ? (
           <VideoPlayer
             stream={rtc.remoteStream}
             className="w-full h-full"
             label={`${doctorName} (Doctor)`}
             objectFit="cover"
+            isCamOff={rtc.isRemoteCamOff}
+            isAudioOnlyFallback={rtc.isAudioOnlyFallback}
+            fallbackName={doctorName}
+            fallbackAvatar={doctorAvatar}
+            fallbackRole="Doctor"
           />
         ) : (
           <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-ink gap-3 text-center p-6">
@@ -522,7 +539,11 @@ export default function TelehealthRoomPage({ params }: PageProps) {
                 {formatTimer(rtc.callDurationSeconds)}
               </span>
               <span>•</span>
-              <NetworkIndicator quality={rtc.networkQuality} />
+              <NetworkIndicator
+                quality={rtc.networkQuality}
+                isAudioOnlyFallback={rtc.isAudioOnlyFallback}
+                onToggleSimulate={rtc.simulatePoorNetwork}
+              />
             </div>
           </div>
         </div>
@@ -618,46 +639,60 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         </div>
       )}
 
-      {/* 5. Patient Self-View PiP */}
-      <div className="absolute bottom-28 right-4 sm:bottom-28 sm:right-6 z-30 w-36 sm:w-48 aspect-video rounded-2xl border-2 border-white/20 shadow-2xl overflow-hidden bg-black/85 backdrop-blur-md group">
-        {rtc.isCamOff ? (
-          <div className="w-full h-full bg-black/80 flex flex-col items-center justify-center text-white/50 text-[10px]">
-            <VideoOff className="w-5 h-5 mb-0.5 text-destructive" />
-            <span>Cam Off</span>
-          </div>
-        ) : (
-          <VideoPlayer
-            stream={rtc.localStream}
-            muted
-            mirror
-            className="w-full h-full"
-            label="You"
-            objectFit="cover"
-          />
-        )}
+      {/* 5. Patient Self-View PiP (shown in 1-on-1 mode; in multi-party mode self is displayed in the grid) */}
+      {rtc.remotePeers.length <= 1 && (
+        <div className="absolute bottom-28 right-4 sm:bottom-28 sm:right-6 z-30 w-36 sm:w-48 aspect-video rounded-2xl border-2 border-white/20 shadow-2xl overflow-hidden bg-black/85 backdrop-blur-md group">
+          {rtc.isCamOff ? (
+            <div className="w-full h-full bg-black/80 flex flex-col items-center justify-center text-white/50 text-[10px]">
+              <VideoOff className="w-5 h-5 mb-0.5 text-destructive" />
+              <span>Cam Off</span>
+            </div>
+          ) : (
+            <VideoPlayer
+              stream={rtc.localStream}
+              muted
+              mirror
+              className="w-full h-full"
+              label="You"
+              objectFit="cover"
+            />
+          )}
 
-        {/* Quick PiP action controls */}
-        <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 z-10">
-          <button
-            onClick={rtc.toggleMic}
-            className={`p-1 rounded-full transition-colors cursor-pointer ${
-              rtc.isMicMuted ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-            }`}
-            title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
-          >
-            {rtc.isMicMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 text-emerald-400" />}
-          </button>
-          <button
-            onClick={rtc.toggleCamera}
-            className={`p-1 rounded-full transition-colors cursor-pointer ${
-              rtc.isCamOff ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-            }`}
-            title={rtc.isCamOff ? "Turn On Camera" : "Turn Off Camera"}
-          >
-            {rtc.isCamOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3 text-emerald-400" />}
-          </button>
+          {/* WhatsApp-style audio-only local status badge */}
+          {rtc.isVideoPausedForNetwork && !rtc.isCamOff && (
+            <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center text-center p-1.5 z-10 pointer-events-none">
+              <span className="text-[10px] text-amber-300 font-semibold leading-tight">
+                Video Paused
+              </span>
+              <span className="text-[9px] text-emerald-400 font-medium mt-0.5">
+                Audio Active
+              </span>
+            </div>
+          )}
+
+          {/* Quick PiP action controls */}
+          <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 z-10">
+            <button
+              onClick={rtc.toggleMic}
+              className={`p-1 rounded-full transition-colors cursor-pointer ${
+                rtc.isMicMuted ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
+              }`}
+              title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
+            >
+              {rtc.isMicMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 text-emerald-400" />}
+            </button>
+            <button
+              onClick={rtc.toggleCamera}
+              className={`p-1 rounded-full transition-colors cursor-pointer ${
+                rtc.isCamOff ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
+              }`}
+              title={rtc.isCamOff ? "Turn On Camera" : "Turn Off Camera"}
+            >
+              {rtc.isCamOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3 text-emerald-400" />}
+            </button>
+          </div>
         </div>
-      </div>
+      )}
 
       {/* 6. Chat Panel */}
       <ChatPanel
@@ -733,10 +768,25 @@ export default function TelehealthRoomPage({ params }: PageProps) {
       <StartCallModal
         isOpen={isShareModalOpen}
         onClose={() => setIsShareModalOpen(false)}
-        roomId={resolvedParams.id}
+        roomId={id}
         doctorName={doctorName}
         patientName={patient.name}
       />
     </div>
+  );
+}
+
+export default function TelehealthRoomPage({ params }: PageProps) {
+  const resolvedParams = use(params);
+  return (
+    <React.Suspense
+      fallback={
+        <div className="h-[100dvh] w-full flex items-center justify-center bg-ink text-white">
+          <div className="w-8 h-8 border-2 border-brand border-t-transparent rounded-full animate-spin" />
+        </div>
+      }
+    >
+      <TelehealthRoomContent id={resolvedParams.id} />
+    </React.Suspense>
   );
 }

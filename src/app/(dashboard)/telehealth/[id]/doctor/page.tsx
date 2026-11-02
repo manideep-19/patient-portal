@@ -32,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
 import { useWebRTC } from "@/lib/use-webrtc";
 import { VideoPlayer } from "@/components/telehealth/video-player";
+import { MultiVideoGrid } from "@/components/telehealth/multi-video-grid";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
 import { usePatient } from "@/context/patient-context";
 
@@ -47,16 +48,15 @@ const QUICK_RESPONSES = [
   "I am sending an updated e-prescription to your portal right now.",
 ];
 
-export default function DoctorSimulatorPage({ params }: PageProps) {
-  const resolvedParams = use(params);
+function DoctorConsoleContent({ id }: { id: string }) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const { patient, getAppointmentById } = usePatient();
-  const appointment = getAppointmentById(resolvedParams.id);
+  const appointment = getAppointmentById(id);
 
   const initialPatientPeerId =
     searchParams.get("patientPeerId") ||
-    `smrko-${resolvedParams.id}-patient`;
+    `smrko-${id}-patient`;
 
   const [targetPeerId, setTargetPeerId] = useState(initialPatientPeerId);
   const [activeTab, setActiveTab] = useState<"chat" | "notes">("chat");
@@ -70,7 +70,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // WebRTC hook as Doctor
-  const rtc = useWebRTC(resolvedParams.id, {
+  const rtc = useWebRTC(id, {
     role: "doctor",
     displayName: "Dr. Sunita Sharma",
     targetPeerId: searchParams.get("patientPeerId") || undefined,
@@ -155,7 +155,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
     setShowEndConfirm(false);
     rtc.disconnect();
     toast.info("Consultation completed as Doctor");
-    router.push(`/telehealth/${resolvedParams.id}`);
+    router.push(`/telehealth/${id}`);
   };
 
   return (
@@ -164,7 +164,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
       <header className="h-16 px-4 sm:px-6 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between shrink-0 z-20 backdrop-blur-md">
         <div className="flex items-center gap-3">
           <Link
-            href={`/telehealth/${resolvedParams.id}`}
+            href={`/telehealth/${id}`}
             className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
             title="Back to Patient View"
           >
@@ -189,7 +189,11 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                   {formatTimer(rtc.callDurationSeconds)}
                 </span>
                 <span>•</span>
-                <NetworkIndicator quality={rtc.networkQuality} />
+                <NetworkIndicator
+                  quality={rtc.networkQuality}
+                  isAudioOnlyFallback={rtc.isAudioOnlyFallback}
+                  onToggleSimulate={rtc.simulatePoorNetwork}
+                />
               </div>
             </div>
           </div>
@@ -259,14 +263,31 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
         {/* Left: Video Area */}
         <div className="flex-1 flex flex-col relative bg-slate-950 overflow-hidden">
-          {/* Main Video: Patient's Stream */}
+          {/* Main Video: Patient's Stream or Multi-Party Grid */}
           <div className="relative flex-1 w-full h-full flex items-center justify-center bg-slate-950">
-            {rtc.remoteStream ? (
+            {rtc.remotePeers.length > 1 ? (
+              <MultiVideoGrid
+                localStream={rtc.localStream}
+                remotePeers={rtc.remotePeers}
+                isLocalCamOff={rtc.isCamOff}
+                isLocalMicMuted={rtc.isMicMuted}
+                isVideoPausedForNetwork={rtc.isVideoPausedForNetwork}
+                selfName="Dr. Sunita Sharma"
+                selfRole="doctor"
+                onToggleLocalMic={rtc.toggleMic}
+                onToggleLocalCam={rtc.toggleCamera}
+              />
+            ) : rtc.remoteStream ? (
               <VideoPlayer
                 stream={rtc.remoteStream}
                 className="w-full h-full"
                 label={`${patientName} (Patient Live)`}
                 objectFit="contain"
+                isCamOff={rtc.isRemoteCamOff}
+                isAudioOnlyFallback={rtc.isAudioOnlyFallback}
+                fallbackName={patientName}
+                fallbackAvatar={patient?.avatarUrl || "/branding/avatar-ananya.jpg"}
+                fallbackRole="Patient"
               />
             ) : (
               <div className="flex flex-col items-center justify-center p-8 text-center max-w-md space-y-4">
@@ -293,7 +314,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                     Retry Connection
                   </Button>
                   <a
-                    href={`/telehealth/${resolvedParams.id}`}
+                    href={`/telehealth/${id}`}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 transition-colors"
@@ -305,24 +326,38 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
               </div>
             )}
 
-            {/* Doctor Self-Preview PiP (Bottom Right of Video) */}
-            <div className="absolute bottom-20 right-4 z-20 w-36 sm:w-44 aspect-video rounded-2xl border-2 border-slate-700/80 shadow-2xl overflow-hidden bg-slate-900">
-              {rtc.isCamOff ? (
-                <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[10px]">
-                  <VideoOff className="w-5 h-5 mb-1" />
-                  <span>Doctor Cam Off</span>
-                </div>
-              ) : (
-                <VideoPlayer
-                  stream={rtc.localStream}
-                  muted
-                  mirror
-                  className="w-full h-full"
-                  label="Dr. Sharma (You)"
-                  objectFit="cover"
-                />
-              )}
-            </div>
+            {/* Doctor Self-Preview PiP (Bottom Right of Video, hidden in multi-party grid) */}
+            {rtc.remotePeers.length <= 1 && (
+              <div className="absolute bottom-20 right-4 z-20 w-36 sm:w-44 aspect-video rounded-2xl border-2 border-slate-700/80 shadow-2xl overflow-hidden bg-slate-900">
+                {rtc.isCamOff ? (
+                  <div className="w-full h-full flex flex-col items-center justify-center text-slate-500 text-[10px]">
+                    <VideoOff className="w-5 h-5 mb-1" />
+                    <span>Doctor Cam Off</span>
+                  </div>
+                ) : (
+                  <VideoPlayer
+                    stream={rtc.localStream}
+                    muted
+                    mirror
+                    className="w-full h-full"
+                    label="Dr. Sharma (You)"
+                    objectFit="cover"
+                  />
+                )}
+
+                {/* WhatsApp-style audio-only local status badge */}
+                {rtc.isVideoPausedForNetwork && !rtc.isCamOff && (
+                  <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center text-center p-1.5 z-10 pointer-events-none">
+                    <span className="text-[10px] text-amber-300 font-semibold leading-tight">
+                      Video Paused
+                    </span>
+                    <span className="text-[9px] text-emerald-400 font-medium mt-0.5">
+                      Audio Active
+                    </span>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Doctor Controls Dock */}
@@ -622,5 +657,20 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
         </div>
       )}
     </div>
+  );
+}
+
+export default function DoctorSimulatorPage({ params }: PageProps) {
+  const resolvedParams = use(params);
+  return (
+    <React.Suspense
+      fallback={
+        <div className="h-screen w-full flex items-center justify-center bg-slate-950 text-white">
+          <div className="w-8 h-8 border-2 border-brand border-t-transparent rounded-full animate-spin" />
+        </div>
+      }
+    >
+      <DoctorConsoleContent id={resolvedParams.id} />
+    </React.Suspense>
   );
 }

@@ -195,15 +195,18 @@ export function StartCallModal({
             </div>
           </div>
 
-          {/* Patient Link Card */}
+          {/* Patient / Multi-Participant Link Card */}
           <div className="p-3.5 rounded-2xl bg-muted/40 border border-border space-y-2">
             <div className="flex items-center justify-between text-xs">
               <span className="font-semibold text-foreground flex items-center gap-1.5">
-                <User className="w-3.5 h-3.5 text-ink-soft" />
-                <span>Patient Join Link</span>
+                <User className="w-3.5 h-3.5 text-brand" />
+                <span>Patient / Guest Join Link</span>
+                <span className="text-[10px] bg-brand/10 text-brand font-semibold px-2 py-0.5 rounded-full border border-brand/20">
+                  Multi-Party
+                </span>
               </span>
               <span className="text-[10px] text-muted-foreground">
-                For patient device
+                Same link for multiple participants
               </span>
             </div>
             <div className="flex items-center gap-2">
@@ -230,6 +233,9 @@ export function StartCallModal({
                 )}
               </button>
             </div>
+            <p className="text-[11px] text-muted-foreground leading-tight pt-0.5">
+              Multiple people (patient, spouse, family member) can join simultaneously with this link without any audio/video conflicts.
+            </p>
           </div>
         </div>
 
