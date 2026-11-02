@@ -11,6 +11,7 @@ import {
   MonitorUp,
   MonitorOff,
   MessageSquare,
+  Users,
 } from "lucide-react";
 
 interface CallControlsProps {
@@ -19,10 +20,13 @@ interface CallControlsProps {
   isScreenSharing: boolean;
   isChatOpen: boolean;
   unreadChatCount: number;
+  participantsCount?: number;
+  isParticipantsOpen?: boolean;
   onToggleMic: () => void;
   onToggleCamera: () => void;
   onToggleScreenShare: () => void;
   onToggleChat: () => void;
+  onToggleParticipants?: () => void;
   onSwitchCamera: () => void;
   onEndCall: () => void;
 }
@@ -33,16 +37,19 @@ export function CallControls({
   isScreenSharing,
   isChatOpen,
   unreadChatCount,
+  participantsCount = 1,
+  isParticipantsOpen = false,
   onToggleMic,
   onToggleCamera,
   onToggleScreenShare,
   onToggleChat,
+  onToggleParticipants,
   onSwitchCamera,
   onEndCall,
 }: CallControlsProps) {
   return (
     <div className="w-full p-4 pb-6 bg-gradient-to-t from-black via-black/85 to-transparent flex items-center justify-center safe-bottom pointer-events-auto select-none">
-      <div className="flex items-center gap-2 sm:gap-3.5 p-2 px-3 sm:px-4 rounded-full bg-slate-950/85 border border-white/20 backdrop-blur-2xl shadow-2xl">
+      <div className="flex items-center gap-2 sm:gap-3 p-2 px-3 sm:px-4 rounded-full bg-slate-950/85 border border-white/20 backdrop-blur-2xl shadow-2xl">
         {/* Mic Toggle */}
         <ControlButton
           active={isMicMuted}
@@ -99,6 +106,25 @@ export function CallControls({
           title="Switch Camera (Front/Rear)"
           onClick={onSwitchCamera}
         />
+
+        {/* Participants Roster Toggle */}
+        {onToggleParticipants && (
+          <div className="relative">
+            <ControlButton
+              active={isParticipantsOpen}
+              icon={<Users className="w-5 h-5" />}
+              label="Participants"
+              title={isParticipantsOpen ? "Hide Attendees" : "Show Attendees"}
+              onClick={onToggleParticipants}
+              activeClass="bg-brand text-white shadow-soft"
+            />
+            {participantsCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 bg-white/25 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-slate-950">
+                {participantsCount}
+              </span>
+            )}
+          </div>
+        )}
 
         {/* Chat Toggle */}
         <div className="relative">

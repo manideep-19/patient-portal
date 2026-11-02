@@ -4,11 +4,6 @@ import React, { useState, useEffect, useRef, use } from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import {
-  Mic,
-  MicOff,
-  Video,
-  VideoOff,
-  PhoneOff,
   ShieldCheck,
   Clock,
   ArrowLeft,
@@ -18,22 +13,32 @@ import {
   Copy,
   Loader2,
   AlertTriangle,
-  MonitorUp,
   ExternalLink,
   Share2,
-  MessageSquare,
   X,
-  ArrowRight,
+  Users,
+  User,
+  Heart,
+  Stethoscope,
+  Video,
+  PhoneOff,
 } from "lucide-react";
 import { usePatient } from "@/context/patient-context";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { useWebRTC, type ConnectionState, type ChatMessage } from "@/lib/use-webrtc";
+import {
+  useWebRTC,
+  type ConnectionState,
+  type ChatMessage,
+  type ParticipantRole,
+} from "@/lib/use-webrtc";
 import { VideoPlayer } from "@/components/telehealth/video-player";
+import { VideoGrid } from "@/components/telehealth/video-grid";
 import { CallControls } from "@/components/telehealth/call-controls";
 import { ChatPanel } from "@/components/telehealth/chat-panel";
+import { ParticipantsDrawer } from "@/components/telehealth/participants-drawer";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
 import { DeviceSelector } from "@/components/telehealth/device-selector";
 import { StartCallModal } from "@/components/telehealth/start-call-modal";
@@ -52,74 +57,78 @@ export default function TelehealthRoomPage({ params }: PageProps) {
 
   const appointment = getAppointmentById(resolvedParams.id);
 
-  // If role is doctor, redirect to doctor console immediately
+  // If role is explicitly doctor, route to doctor clinical console
   useEffect(() => {
     if (searchParams.get("role") === "doctor") {
       router.replace(`/telehealth/${resolvedParams.id}/doctor`);
     }
   }, [searchParams, resolvedParams.id, router]);
 
+  // Determine attendee role & default name from URL or patient profile
+  const roleParam = (searchParams.get("role") as ParticipantRole) || "patient";
+  const initialNameParam =
+    searchParams.get("name") ||
+    (roleParam === "family"
+      ? "Vikram Sharma (Spouse)"
+      : roleParam === "coordinator"
+      ? "Nurse Coordinator"
+      : patient.name);
+
   // Page-level state
+  const [displayName, setDisplayName] = useState(initialNameParam);
   const [pageState, setPageState] = useState<PageState>("prejoin");
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
-  const [latestDoctorMessage, setLatestDoctorMessage] = useState<ChatMessage | null>(null);
   const prevMessagesCountRef = useRef(0);
 
-  // WebRTC hook
+  // WebRTC multi-party hook
   const rtc = useWebRTC(resolvedParams.id, {
-    role: "patient",
-    displayName: patient.name,
+    role: roleParam,
+    displayName,
   });
 
   const doctorName = appointment?.doctorName || "Dr. Sunita Sharma";
   const doctorSpecialty = appointment?.doctorSpecialty || "Fertility & IVF Specialist";
   const doctorAvatar = appointment?.doctorAvatar || "/branding/spec-fertility.jpg";
 
-  // Doctor peer ID for this room
-  const doctorPeerId = rtc.peerId
-    ? rtc.peerId.replace("-patient-", "-doctor-").replace(/-.{5}$/, "")
-    : null;
-
-  // Format timer
+  // Format call timer
   const formatTimer = (totalSeconds: number) => {
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
     return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
-  // Request camera/mic on mount
+  // Request camera and microphone on mount
   useEffect(() => {
     rtc.startLocalMedia(true, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Transition to in_call when connected
+  // Transition to in_call automatically when remote participants connect while in prejoin
   useEffect(() => {
-    if (rtc.connectionState === "connected" && pageState === "prejoin") {
+    if (rtc.remoteParticipants.length > 0 && pageState === "prejoin") {
       setPageState("in_call");
-      toast.success(`Connected to ${doctorName}`, {
-        description: "Encrypted HD teleconsultation active.",
+      toast.success("Joined Consultation", {
+        description: `${rtc.remoteParticipants[0]?.displayName} is in the room.`,
       });
     }
-  }, [rtc.connectionState, pageState, doctorName]);
+  }, [rtc.remoteParticipants, pageState]);
 
-  // Track unread chat messages & alert on incoming doctor messages
+  // Track unread chat messages & notifications
   useEffect(() => {
     if (rtc.chatMessages.length > prevMessagesCountRef.current) {
       const lastMsg = rtc.chatMessages[rtc.chatMessages.length - 1];
       if (lastMsg && lastMsg.sender === "remote") {
         if (!isChatOpen) {
-          setLatestDoctorMessage(lastMsg);
-          toast.info(`${doctorName}: "${lastMsg.text}"`, {
-            description: "Click to open chat & reply",
+          toast.info(`${lastMsg.senderName || "New message"}: "${lastMsg.text}"`, {
+            description: "Click to open group chat",
             action: {
               label: "Open Chat",
               onClick: () => {
                 setIsChatOpen(true);
-                setLatestDoctorMessage(null);
                 setUnreadChatCount(0);
               },
             },
@@ -136,7 +145,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
     } else {
       setUnreadChatCount(0);
     }
-  }, [rtc.chatMessages, isChatOpen, doctorName]);
+  }, [rtc.chatMessages, isChatOpen]);
 
   // Handle end call
   const handleEndCall = () => {
@@ -148,18 +157,15 @@ export default function TelehealthRoomPage({ params }: PageProps) {
     });
   };
 
-  const doctorUrl =
-    typeof window !== "undefined"
-      ? `${window.location.origin}/telehealth/${resolvedParams.id}/doctor${
-          rtc.peerId ? `?patientPeerId=${encodeURIComponent(rtc.peerId)}` : ""
-        }`
-      : `/telehealth/${resolvedParams.id}/doctor`;
+  const origin = typeof window !== "undefined" ? window.location.origin : "";
+  const doctorUrl = `${origin}/telehealth/${resolvedParams.id}/doctor`;
+  const spouseUrl = `${origin}/telehealth/${resolvedParams.id}?role=family&name=Vikram%20Sharma`;
 
-  // Handle join call
+  // Handle join call button
   const handleJoinCall = () => {
     setPageState("in_call");
     toast.info("Entered Consultation Room", {
-      description: "Waiting for doctor to connect...",
+      description: "Connecting with attendees...",
     });
   };
 
@@ -174,18 +180,11 @@ export default function TelehealthRoomPage({ params }: PageProps) {
 
   // Copy doctor link
   const handleCopyDoctorLink = () => {
-    if (doctorUrl) {
-      navigator.clipboard.writeText(doctorUrl).then(() => {
-        toast.success("Doctor link copied!", {
-          description: "Open this link in another tab to simulate the doctor joining.",
-        });
+    navigator.clipboard.writeText(doctorUrl).then(() => {
+      toast.success("Doctor link copied!", {
+        description: "Open in another tab to test doctor perspective.",
       });
-    }
-  };
-
-  // Handle camera switch
-  const handleSwitchCamera = async () => {
-    toast.info("Camera view switched");
+    });
   };
 
   // -----------------------------------------------------------------
@@ -194,8 +193,6 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   if (pageState === "prejoin") {
     const isMediaReady =
       rtc.connectionState !== "requesting_media" && rtc.localStream !== null;
-    const isWaiting =
-      rtc.connectionState === "waiting" || rtc.connectionState === "idle";
     const isConnecting = rtc.connectionState === "connecting";
 
     return (
@@ -215,176 +212,136 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               className="flex items-center gap-1 text-[11px] text-brand-soft hover:text-white bg-white/10 hover:bg-white/20 px-2.5 py-1 rounded-full border border-white/20 transition-colors cursor-pointer"
             >
               <Share2 className="w-3.5 h-3.5 text-brand" />
-              <span>Share Links</span>
+              <span>Invite Links</span>
             </button>
             <div className="flex items-center gap-1 text-[11px] text-success bg-success/20 px-2.5 py-1 rounded-full border border-success/30">
-              <ShieldCheck className="w-3.5 h-3.5" />
-              <span>Encrypted Room</span>
+              <span className="w-1.5 h-1.5 rounded-full bg-success animate-pulse" />
+              <span>Multi-Party Enabled</span>
             </div>
           </div>
         </div>
 
-        {/* Self-preview section */}
-        <div className="my-auto py-6 space-y-5">
-          <div className="text-center">
-            <h1 className="text-xl sm:text-2xl font-bold tracking-tight">
-              Ready to Join Teleconsultation?
-            </h1>
-            <p className="text-xs text-white/70 mt-1">
-              Consulting with <strong className="text-white">{doctorName}</strong>
-            </p>
-          </div>
-
-          {/* Live camera preview */}
-          <div className="relative w-full aspect-video rounded-3xl bg-white/5 border border-white/10 overflow-hidden shadow-2xl">
-            {rtc.error ? (
-              <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/50 p-4 text-center">
-                <AlertTriangle className="w-10 h-10 text-amber-400" />
-                <span className="text-xs text-amber-300">{rtc.error}</span>
-                <button
-                  onClick={() => rtc.startLocalMedia(true, true)}
-                  className="mt-2 text-xs text-brand underline cursor-pointer"
-                >
-                  Retry
-                </button>
-              </div>
-            ) : rtc.isCamOff ? (
-              <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/50">
-                <VideoOff className="w-12 h-12 stroke-1" />
-                <span className="text-xs">Camera is switched off</span>
-              </div>
-            ) : (
-              <VideoPlayer
-                stream={rtc.localStream}
-                muted
-                mirror
-                className="w-full h-full"
-                label={`${patient.name} (You)`}
-                objectFit="cover"
-              />
-            )}
-
-            {/* In-preview toggles */}
-            <div className="absolute bottom-3 right-3 flex items-center gap-2">
-              <button
-                onClick={rtc.toggleMic}
-                className={`p-2.5 rounded-full backdrop-blur-md transition-colors cursor-pointer ${
-                  rtc.isMicMuted
-                    ? "bg-destructive text-white"
-                    : "bg-black/50 text-white hover:bg-black/80"
-                }`}
-                aria-label="Toggle Microphone"
-              >
-                {rtc.isMicMuted ? (
-                  <MicOff className="w-4 h-4" />
-                ) : (
-                  <Mic className="w-4 h-4" />
-                )}
-              </button>
-              <button
-                onClick={rtc.toggleCamera}
-                className={`p-2.5 rounded-full backdrop-blur-md transition-colors cursor-pointer ${
-                  rtc.isCamOff
-                    ? "bg-destructive text-white"
-                    : "bg-black/50 text-white hover:bg-black/80"
-                }`}
-                aria-label="Toggle Camera"
-              >
-                {rtc.isCamOff ? (
-                  <VideoOff className="w-4 h-4" />
-                ) : (
-                  <Video className="w-4 h-4" />
-                )}
-              </button>
+        {/* Doctor & Appointment Card */}
+        <div className="p-4 rounded-2xl bg-white/5 border border-white/10 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <Avatar name={doctorName} src={doctorAvatar} size="lg" className="ring-2 ring-brand" />
+            <div>
+              <div className="text-xs text-brand-soft font-semibold">{doctorSpecialty}</div>
+              <h2 className="text-sm sm:text-base font-bold text-white">{doctorName}</h2>
+              <p className="text-[11px] text-white/60">
+                SmrkoMed Fertility & Women&apos;s Hospital, Indiranagar
+              </p>
             </div>
           </div>
+          <div className="text-right">
+            <Badge variant="primary" size="sm" className="text-[10px]">
+              {roleParam === "family" ? "Spouse Attendance" : roleParam === "coordinator" ? "Care Team" : "Video Visit"}
+            </Badge>
+          </div>
+        </div>
 
-          {/* Device status checks */}
-          <div className="grid grid-cols-2 gap-3 text-xs">
-            <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-center gap-2.5">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  isMediaReady ? "bg-success animate-pulse" : "bg-amber-400"
-                }`}
-              />
-              <div>
-                <div className="font-semibold text-white">Microphone</div>
-                <div className="text-[11px] text-white/60">
-                  {rtc.isMicMuted
-                    ? "Muted"
-                    : isMediaReady
-                    ? "Active (Good audio)"
-                    : "Requesting access..."}
-                </div>
-              </div>
+        {/* Camera Preview Tile */}
+        <div className="relative aspect-video rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-lift flex items-center justify-center">
+          {rtc.localStream && !rtc.isCamOff ? (
+            <VideoPlayer
+              stream={rtc.localStream}
+              mirror
+              className="w-full h-full object-cover"
+              label="Your Video Preview"
+            />
+          ) : (
+            <div className="flex flex-col items-center justify-center gap-2 p-6 text-center">
+              <Avatar name={displayName} size="xl" className="ring-2 ring-white/20" />
+              <p className="text-xs text-white/70">
+                {rtc.isCamOff ? "Camera switched off" : "Requesting camera & microphone access..."}
+              </p>
             </div>
+          )}
 
-            <div className="p-3 rounded-2xl bg-white/5 border border-white/10 flex items-center gap-2.5">
-              <div
-                className={`w-2 h-2 rounded-full ${
-                  rtc.connectionState === "waiting" ? "bg-success" : "bg-amber-400"
-                }`}
+          {/* Floating Pre-join Controls */}
+          <div className="absolute bottom-3 inset-x-0 flex items-center justify-center gap-3 pointer-events-auto">
+            <button
+              onClick={rtc.toggleMic}
+              className={`p-3 rounded-full shadow-lg transition-transform active:scale-95 cursor-pointer ${
+                rtc.isMicMuted
+                  ? "bg-destructive text-white ring-2 ring-destructive/40"
+                  : "bg-white/20 hover:bg-white/30 text-emerald-400 backdrop-blur-md"
+              }`}
+              title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
+            >
+              {rtc.isMicMuted ? <AlertTriangle className="w-4 h-4" /> : <ShieldCheck className="w-4 h-4" />}
+            </button>
+            <button
+              onClick={rtc.toggleCamera}
+              className={`p-3 rounded-full shadow-lg transition-transform active:scale-95 cursor-pointer ${
+                rtc.isCamOff
+                  ? "bg-destructive text-white ring-2 ring-destructive/40"
+                  : "bg-white/20 hover:bg-white/30 text-white backdrop-blur-md"
+              }`}
+              title={rtc.isCamOff ? "Turn Cam On" : "Turn Cam Off"}
+            >
+              <Video className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+
+        {/* Attendee Name & Settings */}
+        <div className="space-y-3">
+          <div className="p-3.5 rounded-2xl bg-white/5 border border-white/10 space-y-2">
+            <label className="text-[11px] font-semibold text-white/70 block">
+              Your Display Name in Consultation:
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                placeholder="Enter your name"
+                className="flex-1 px-3 py-2 rounded-xl bg-white/10 border border-white/15 text-xs text-white placeholder-white/40 focus:outline-none focus:ring-1 focus:ring-brand"
               />
-              <div>
-                <div className="font-semibold text-white">Network</div>
-                <div className="text-[11px] text-white/60">
-                  {rtc.connectionState === "waiting"
-                    ? "Ready"
-                    : rtc.connectionState === "requesting_media"
-                    ? "Setting up..."
-                    : "Connecting..."}
-                </div>
-              </div>
+              <span className="px-2 py-1 rounded-lg text-[10px] font-bold bg-brand/20 text-brand-soft border border-brand/30">
+                {roleParam.toUpperCase()}
+              </span>
             </div>
           </div>
 
-          {/* Room ID & Doctor Link */}
-          <div className="space-y-2">
-            <div className="p-3 rounded-2xl bg-white/5 border border-white/10">
-              <div className="text-[11px] text-white/50 mb-1">Room ID (for testing)</div>
-              <div className="flex items-center gap-2">
-                <code className="flex-1 text-xs text-brand-soft font-mono truncate">
-                  {rtc.peerId || `smrko-${resolvedParams.id}-patient (connecting...)`}
-                </code>
-                <button
-                  onClick={handleCopyRoomId}
-                  className="p-1.5 rounded-lg bg-white/10 hover:bg-white/20 cursor-pointer"
-                  title="Copy Room ID"
-                >
-                  <Copy className="w-3.5 h-3.5 text-white/70" />
-                </button>
-              </div>
+          {/* Quick Multi-Party Test Links */}
+          <div className="p-3 rounded-2xl bg-white/5 border border-white/10 space-y-2">
+            <div className="flex items-center justify-between text-[11px] text-white/60">
+              <span>Test Multi-Person Calling:</span>
+              <span className="text-brand-soft font-mono text-[10px]">Room: {resolvedParams.id}</span>
             </div>
-
-            <div className="flex gap-2">
+            <div className="grid grid-cols-2 gap-2">
               <a
                 href={doctorUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="flex-1 py-2 px-3 rounded-xl bg-brand/20 hover:bg-brand/30 text-brand-soft border border-brand/30 text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors"
+                className="py-2 px-2.5 rounded-xl bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 border border-emerald-500/30 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
               >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open Doctor Simulator</span>
+                <Stethoscope className="w-3.5 h-3.5" />
+                <span>Open Doctor Tab</span>
               </a>
-              <button
-                onClick={handleCopyDoctorLink}
-                className="px-3 py-2 rounded-xl bg-white/10 hover:bg-white/20 text-white/80 text-xs transition-colors cursor-pointer"
-                title="Copy Doctor Link"
+              <a
+                href={spouseUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="py-2 px-2.5 rounded-xl bg-violet-500/20 hover:bg-violet-500/30 text-violet-300 border border-violet-500/30 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors"
               >
-                <Copy className="w-3.5 h-3.5" />
-              </button>
+                <Heart className="w-3.5 h-3.5" />
+                <span>Open Spouse Tab</span>
+              </a>
             </div>
           </div>
         </div>
 
-        {/* Join button */}
-        <div className="space-y-3">
+        {/* Enter Button */}
+        <div className="space-y-2 pt-2">
           <Button
             variant="primary"
             size="lg"
             fullWidth
             onClick={handleJoinCall}
-            className="text-base font-bold shadow-lift"
+            className="text-base font-bold shadow-lift cursor-pointer"
             disabled={isConnecting}
           >
             {isConnecting ? (
@@ -400,9 +357,18 @@ export default function TelehealthRoomPage({ params }: PageProps) {
             )}
           </Button>
           <p className="text-[11px] text-center text-white/50">
-            Click to enter your secure consultation room.
+            Encrypted WebRTC HD call. Supports multi-participant video mesh.
           </p>
         </div>
+
+        {/* Invite Links Modal */}
+        <StartCallModal
+          isOpen={isShareModalOpen}
+          onClose={() => setIsShareModalOpen(false)}
+          roomId={resolvedParams.id}
+          doctorName={doctorName}
+          patientName={patient.name}
+        />
       </div>
     );
   }
@@ -430,15 +396,15 @@ export default function TelehealthRoomPage({ params }: PageProps) {
             <span>Session Summary</span>
           </div>
           <p className="text-ink-soft leading-relaxed">
-            1. Your video consultation with {doctorName} lasted {formatTimer(rtc.callDurationSeconds || 0)}.
+            1. Your consultation lasted {formatTimer(rtc.callDurationSeconds || 0)}.
           </p>
           <p className="text-ink-soft leading-relaxed">
             2. {rtc.chatMessages.length > 0
-              ? `${rtc.chatMessages.length} messages were exchanged during the session.`
-              : "No chat messages were exchanged."}
+              ? `${rtc.chatMessages.length} messages exchanged across attendees.`
+              : "No chat messages exchanged."}
           </p>
           <p className="text-ink-soft leading-relaxed">
-            3. Consultation notes and prescriptions will be updated by your doctor.
+            3. Clinical notes and prescriptions will be updated in your records.
           </p>
         </div>
 
@@ -461,52 +427,14 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   }
 
   // -----------------------------------------------------------------
-  // IN-CALL SCREEN
+  // IN-CALL MULTI-PARTY SCREEN
   // -----------------------------------------------------------------
-  return (
-    <div className="relative h-[100dvh] w-full bg-ink text-white overflow-hidden select-none">
-      {/* 1. Main Background Video (Doctor's Remote Stream) */}
-      <div className="absolute inset-0 w-full h-full z-0 overflow-hidden bg-slate-950">
-        {rtc.remoteStream ? (
-          <VideoPlayer
-            stream={rtc.remoteStream}
-            className="w-full h-full"
-            label={`${doctorName} (Doctor)`}
-            objectFit="cover"
-          />
-        ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-900 via-slate-950 to-ink gap-3 text-center p-6">
-            <Avatar
-              name={doctorName}
-              src={doctorAvatar}
-              size="xl"
-              className="ring-4 ring-brand/40 animate-pulse-subtle"
-            />
-            <h3 className="text-lg font-bold">{doctorName}</h3>
-            <p className="text-xs text-white/60">Waiting for doctor&apos;s live video...</p>
-            <div className="pt-2 flex flex-col items-center gap-2">
-              <a
-                href={doctorUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand hover:bg-brand-dark text-xs font-semibold text-white shadow-soft transition-colors"
-              >
-                <ExternalLink className="w-3.5 h-3.5" />
-                <span>Open Doctor Tab to Connect</span>
-              </a>
-              <button
-                onClick={handleCopyDoctorLink}
-                className="text-[11px] text-white/50 hover:text-white underline cursor-pointer"
-              >
-                Copy Doctor Join Link
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
+  const totalAttendees = 1 + rtc.remoteParticipants.length;
 
-      {/* 2. Top Header Bar */}
-      <div className="absolute top-0 left-0 right-0 z-30 p-4 flex items-center justify-between bg-gradient-to-b from-black/85 via-black/45 to-transparent pointer-events-auto">
+  return (
+    <div className="relative h-[100dvh] w-full bg-ink text-white overflow-hidden select-none flex flex-col">
+      {/* 1. Top Header Bar */}
+      <div className="h-16 px-4 sm:px-6 flex items-center justify-between bg-gradient-to-b from-black/90 via-black/60 to-transparent border-b border-white/10 shrink-0 z-30">
         <div className="flex items-center gap-3">
           <Avatar name={doctorName} src={doctorAvatar} size="sm" className="ring-2 ring-brand" />
           <div>
@@ -517,219 +445,115 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               </Badge>
             </div>
             <div className="text-[11px] text-white/70 flex items-center gap-2">
-              <span className="flex items-center gap-1">
-                <Clock className="w-3 h-3 text-brand" />
-                {formatTimer(rtc.callDurationSeconds)}
+              <span className="flex items-center gap-1 font-mono">
+                <Clock className="w-3 h-3 text-brand-soft" />
+                <span>{formatTimer(rtc.callDurationSeconds)}</span>
               </span>
               <span>•</span>
-              <NetworkIndicator quality={rtc.networkQuality} />
+              <button
+                onClick={() => setIsParticipantsOpen(true)}
+                className="hover:text-white flex items-center gap-1 text-[11px] text-white/80 bg-white/10 px-2 py-0.5 rounded-full transition-colors cursor-pointer"
+              >
+                <Users className="w-3 h-3 text-brand" />
+                <span>{totalAttendees} in call</span>
+              </button>
             </div>
           </div>
         </div>
 
         {/* Right Header Actions */}
         <div className="flex items-center gap-2">
-          {rtc.isScreenSharing && (
-            <div className="flex items-center gap-1.5 text-[11px] text-amber-400 bg-amber-500/20 px-2.5 py-1 rounded-full border border-amber-500/30">
-              <MonitorUp className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Sharing Screen</span>
-            </div>
-          )}
-
-          {/* Quick Chat Button in Top Bar */}
-          <button
-            onClick={() => {
-              const next = !isChatOpen;
-              setIsChatOpen(next);
-              if (next) {
-                setUnreadChatCount(0);
-                setLatestDoctorMessage(null);
-              }
-            }}
-            className={`relative flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border backdrop-blur-md transition-all cursor-pointer ${
-              isChatOpen
-                ? "bg-brand text-white border-brand shadow-soft"
-                : "bg-white/10 hover:bg-white/20 text-white border-white/20"
-            }`}
-            title={isChatOpen ? "Close Chat" : "Open Chat with Doctor"}
-          >
-            <MessageSquare className="w-3.5 h-3.5" />
-            <span className="hidden sm:inline">Chat</span>
-            {unreadChatCount > 0 && !isChatOpen && (
-              <span className="min-w-[18px] h-4 px-1 bg-destructive text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
-                {unreadChatCount > 9 ? "9+" : unreadChatCount}
-              </span>
-            )}
-          </button>
-
+          <NetworkIndicator quality={rtc.networkQuality} />
           <button
             onClick={() => setIsShareModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-medium border border-white/20 backdrop-blur-md transition-colors cursor-pointer"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-white/10 hover:bg-white/20 text-white text-xs font-semibold border border-white/15 transition-colors cursor-pointer"
+            title="Invite Participants"
           >
-            <Share2 className="w-3.5 h-3.5 text-brand-soft" />
-            <span className="hidden sm:inline">Invite / Share Link</span>
+            <Share2 className="w-3.5 h-3.5 text-brand" />
+            <span className="hidden sm:inline">Invite</span>
           </button>
         </div>
       </div>
 
-      {/* 3. Reconnecting Banner */}
-      {rtc.connectionState === "reconnecting" && (
-        <div className="absolute top-16 left-4 right-4 z-35 p-2.5 rounded-xl bg-amber-500/90 text-ink text-xs font-semibold flex items-center justify-center gap-2 animate-pulse shadow-lg">
-          <AlertTriangle className="w-4 h-4 text-ink" />
-          <span>Reconnecting... Please hold on.</span>
-        </div>
-      )}
-
-      {/* 4. Floating Incoming Message Alert Toast/Banner */}
-      {!isChatOpen && latestDoctorMessage && (
-        <div className="absolute top-20 left-4 right-4 sm:left-auto sm:right-6 sm:w-96 z-35 animate-in slide-in-from-top-4 fade-in duration-300">
-          <div className="p-3.5 rounded-2xl bg-slate-950/95 border border-brand/40 shadow-2xl backdrop-blur-2xl flex items-start gap-3 text-white ring-1 ring-white/10">
-            <div className="w-8 h-8 rounded-full bg-brand/20 border border-brand/40 flex items-center justify-center shrink-0 text-brand-soft">
-              <MessageSquare className="w-4 h-4" />
-            </div>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-[11px] font-bold text-brand-soft truncate">{doctorName}</span>
-                <span className="text-[10px] text-white/50">{latestDoctorMessage.timestamp}</span>
-              </div>
-              <p className="text-xs text-white/90 mt-0.5 line-clamp-2 leading-snug">
-                {latestDoctorMessage.text}
-              </p>
-              <button
-                onClick={() => {
-                  setIsChatOpen(true);
-                  setLatestDoctorMessage(null);
-                  setUnreadChatCount(0);
-                }}
-                className="mt-2 text-[11px] font-semibold text-brand-soft hover:text-white flex items-center gap-1 cursor-pointer transition-colors"
+      {/* 2. Main Adaptive Video Grid */}
+      <div className="flex-1 w-full overflow-hidden relative">
+        <VideoGrid
+          localStream={rtc.localStream}
+          localDisplayName={displayName}
+          localRole={roleParam}
+          isLocalMicMuted={rtc.isMicMuted}
+          isLocalCamOff={rtc.isCamOff}
+          isLocalScreenSharing={rtc.isScreenSharing}
+          remoteParticipants={rtc.remoteParticipants}
+          emptyStateAction={
+            <div className="flex gap-2">
+              <a
+                href={doctorUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex-1 py-2 px-3 rounded-xl bg-brand hover:bg-brand-dark text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-soft"
               >
-                <span>Open Chat to Reply</span>
-                <ArrowRight className="w-3 h-3" />
-              </button>
+                <ExternalLink className="w-3.5 h-3.5" />
+                <span>Doctor Tab</span>
+              </a>
+              <a
+                href={spouseUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="flex-1 py-2 px-3 rounded-xl bg-violet-600 hover:bg-violet-700 text-white text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors shadow-soft"
+              >
+                <Heart className="w-3.5 h-3.5" />
+                <span>Spouse Tab</span>
+              </a>
             </div>
-            <button
-              onClick={() => setLatestDoctorMessage(null)}
-              className="p-1 rounded-full text-white/40 hover:text-white cursor-pointer"
-              title="Dismiss"
-            >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* 5. Patient Self-View PiP */}
-      <div className="absolute bottom-28 right-4 sm:bottom-28 sm:right-6 z-30 w-36 sm:w-48 aspect-video rounded-2xl border-2 border-white/20 shadow-2xl overflow-hidden bg-black/85 backdrop-blur-md group">
-        {rtc.isCamOff ? (
-          <div className="w-full h-full bg-black/80 flex flex-col items-center justify-center text-white/50 text-[10px]">
-            <VideoOff className="w-5 h-5 mb-0.5 text-destructive" />
-            <span>Cam Off</span>
-          </div>
-        ) : (
-          <VideoPlayer
-            stream={rtc.localStream}
-            muted
-            mirror
-            className="w-full h-full"
-            label="You"
-            objectFit="cover"
-          />
-        )}
-
-        {/* Quick PiP action controls */}
-        <div className="absolute bottom-1.5 right-1.5 flex items-center gap-1 z-10">
-          <button
-            onClick={rtc.toggleMic}
-            className={`p-1 rounded-full transition-colors cursor-pointer ${
-              rtc.isMicMuted ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-            }`}
-            title={rtc.isMicMuted ? "Unmute Mic" : "Mute Mic"}
-          >
-            {rtc.isMicMuted ? <MicOff className="w-3 h-3" /> : <Mic className="w-3 h-3 text-emerald-400" />}
-          </button>
-          <button
-            onClick={rtc.toggleCamera}
-            className={`p-1 rounded-full transition-colors cursor-pointer ${
-              rtc.isCamOff ? "bg-destructive text-white" : "bg-black/60 text-white/90 hover:bg-black/80"
-            }`}
-            title={rtc.isCamOff ? "Turn On Camera" : "Turn Off Camera"}
-          >
-            {rtc.isCamOff ? <VideoOff className="w-3 h-3" /> : <Video className="w-3 h-3 text-emerald-400" />}
-          </button>
-        </div>
+          }
+        />
       </div>
 
-      {/* 6. Chat Panel */}
+      {/* 3. Bottom Controls */}
+      <CallControls
+        isMicMuted={rtc.isMicMuted}
+        isCamOff={rtc.isCamOff}
+        isScreenSharing={rtc.isScreenSharing}
+        isChatOpen={isChatOpen}
+        unreadChatCount={unreadChatCount}
+        participantsCount={totalAttendees}
+        isParticipantsOpen={isParticipantsOpen}
+        onToggleMic={rtc.toggleMic}
+        onToggleCamera={rtc.toggleCamera}
+        onToggleScreenShare={rtc.toggleScreenShare}
+        onToggleChat={() => setIsChatOpen((prev) => !prev)}
+        onToggleParticipants={() => setIsParticipantsOpen((prev) => !prev)}
+        onSwitchCamera={() => toast.info("Camera angle switched")}
+        onEndCall={() => setShowEndConfirm(true)}
+      />
+
+      {/* 4. Chat Panel */}
       <ChatPanel
         isOpen={isChatOpen}
         messages={rtc.chatMessages}
         isRemoteTyping={rtc.isRemoteTyping}
-        localLabel="You"
-        remoteLabel={doctorName.split(" ").slice(0, 2).join(" ")}
-        onClose={() => {
-          setIsChatOpen(false);
-          setUnreadChatCount(0);
-          setLatestDoctorMessage(null);
-        }}
+        remoteTypingName={rtc.remoteTypingName}
+        localLabel={displayName}
+        remoteLabel={doctorName}
+        onClose={() => setIsChatOpen(false)}
         onSend={rtc.sendChatMessage}
         onTyping={rtc.sendTypingIndicator}
       />
 
-      {/* 7. Floating Bottom Controls Dock */}
-      <div className="absolute bottom-0 left-0 right-0 z-30 pointer-events-auto">
-        <CallControls
-          isMicMuted={rtc.isMicMuted}
-          isCamOff={rtc.isCamOff}
-          isScreenSharing={rtc.isScreenSharing}
-          isChatOpen={isChatOpen}
-          unreadChatCount={unreadChatCount}
-          onToggleMic={rtc.toggleMic}
-          onToggleCamera={rtc.toggleCamera}
-          onToggleScreenShare={rtc.toggleScreenShare}
-          onToggleChat={() => {
-            const next = !isChatOpen;
-            setIsChatOpen(next);
-            if (next) {
-              setUnreadChatCount(0);
-              setLatestDoctorMessage(null);
-            }
-          }}
-          onSwitchCamera={handleSwitchCamera}
-          onEndCall={() => setShowEndConfirm(true)}
-        />
-      </div>
+      {/* 5. Participants Drawer */}
+      <ParticipantsDrawer
+        isOpen={isParticipantsOpen}
+        onClose={() => setIsParticipantsOpen(false)}
+        roomId={resolvedParams.id}
+        localName={displayName}
+        localRole={roleParam}
+        isLocalMicMuted={rtc.isMicMuted}
+        isLocalCamOff={rtc.isCamOff}
+        remoteParticipants={rtc.remoteParticipants}
+      />
 
-      {/* 8. End Call Confirmation Modal */}
-      {showEndConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-3xl bg-card text-ink p-5 space-y-4 text-center">
-            <div className="w-12 h-12 rounded-full bg-destructive/15 text-destructive mx-auto flex items-center justify-center">
-              <PhoneOff className="w-6 h-6" />
-            </div>
-            <div>
-              <h3 className="text-base font-bold">End Consultation?</h3>
-              <p className="text-xs text-ink-soft mt-1">
-                Are you sure you want to conclude this session with {doctorName}?
-              </p>
-            </div>
-            <div className="flex gap-2.5 pt-2">
-              <Button
-                variant="outline"
-                size="md"
-                fullWidth
-                onClick={() => setShowEndConfirm(false)}
-              >
-                Continue Call
-              </Button>
-              <Button variant="destructive" size="md" fullWidth onClick={handleEndCall}>
-                End Call
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 9. Start Call / Share Modal */}
+      {/* 6. Invite / Share Modal */}
       <StartCallModal
         isOpen={isShareModalOpen}
         onClose={() => setIsShareModalOpen(false)}
@@ -737,6 +561,41 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         doctorName={doctorName}
         patientName={patient.name}
       />
+
+      {/* 7. End Call Confirmation Modal */}
+      {showEndConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="w-full max-w-sm rounded-3xl bg-card border border-border p-6 text-center space-y-4 shadow-lift text-foreground">
+            <div className="w-12 h-12 rounded-full bg-destructive/15 text-destructive mx-auto flex items-center justify-center">
+              <PhoneOff className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-base text-ink">End Consultation?</h3>
+              <p className="text-xs text-ink-soft mt-1">
+                Are you sure you want to leave this multi-party consultation?
+              </p>
+            </div>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="md"
+                fullWidth
+                onClick={() => setShowEndConfirm(false)}
+              >
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                size="md"
+                fullWidth
+                onClick={handleEndCall}
+              >
+                End Call
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
