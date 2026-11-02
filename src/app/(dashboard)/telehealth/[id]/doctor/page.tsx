@@ -182,7 +182,11 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
 
         {/* Right Info & Attendees buttons */}
         <div className="flex items-center gap-2.5 sm:gap-3">
-          <NetworkIndicator quality={rtc.networkQuality} />
+          <NetworkIndicator
+            quality={rtc.networkQuality}
+            isAudioOnlyFallback={rtc.isAudioOnlyFallback}
+            onToggleSimulate={() => rtc.simulatePoorNetwork()}
+          />
 
           <Button
             size="sm"

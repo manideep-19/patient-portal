@@ -4,6 +4,7 @@
  * Built on PeerJS and room signaling to support 1-to-1 consultations,
  * couple / family attendance (patient + spouse), and clinical team presence
  * (doctor + nurse coordinator / specialist) simultaneously in a deterministic mesh.
+ * Includes WhatsApp-style adaptive audio-first network resilience.
  */
 
 "use client";
@@ -44,6 +45,7 @@ export interface RemoteParticipant {
   isTyping?: boolean;
   isScreenSharing?: boolean;
   networkQuality?: NetworkQuality;
+  isVideoPausedForNetwork?: boolean;
 }
 
 /** Backwards-compatible alias for RemoteParticipant */
@@ -60,7 +62,13 @@ export interface ChatMessage {
 }
 
 interface DataPayload {
-  type: "chat" | "typing" | "stop_typing" | "media_state" | "participant_info";
+  type:
+    | "chat"
+    | "typing"
+    | "stop_typing"
+    | "media_state"
+    | "participant_info"
+    | "network_mode";
   message?: string;
   timestamp?: string;
   id?: string;
@@ -68,6 +76,7 @@ interface DataPayload {
   senderRole?: ParticipantRole;
   isMicMuted?: boolean;
   isCamOff?: boolean;
+  videoPausedForNetwork?: boolean;
 }
 
 export interface UseWebRTCOptions {
@@ -88,6 +97,7 @@ export interface UseWebRTCReturn {
   remoteStream: MediaStream | null; // For 1:1 backwards-compatibility
   remoteParticipants: RemoteParticipant[]; // Full multi-party attendee list
   remotePeers: RemoteParticipant[]; // Backwards-compatibility alias
+  remotePeersCount: number;
   connectionState: ConnectionState;
   networkQuality: NetworkQuality;
   isMicMuted: boolean;
@@ -104,6 +114,13 @@ export interface UseWebRTCReturn {
   error: string | null;
   facingMode: "user" | "environment";
   participantCount: number;
+
+  // WhatsApp-style Adaptive Audio-First Resilience
+  isVideoPausedForNetwork: boolean;
+  isRemoteVideoPausedForNetwork: boolean;
+  isAudioOnlyFallback: boolean;
+  isSimulatedPoorNetwork: boolean;
+  simulatePoorNetwork: (enable?: boolean) => void;
 
   startLocalMedia: (video?: boolean, audio?: boolean) => Promise<void>;
   stopLocalMedia: () => void;
@@ -139,10 +156,6 @@ function generateUniquePeerId(
   return `smrko-${sanitizeId(roomId)}-${role}-${rand}`;
 }
 
-/**
- * Deterministic initiator rule: in any pair of peers, only the alphabetically
- * smaller (or greater) ID initiates the media call to prevent glare.
- */
 function shouldInitiateCall(myId: string, theirId: string): boolean {
   return myId.localeCompare(theirId) > 0;
 }
@@ -174,6 +187,11 @@ export function useWebRTC(
   const [remoteTypingName, setRemoteTypingName] = useState<string | undefined>(undefined);
   const [facingMode, setFacingMode] = useState<"user" | "environment">("user");
 
+  // Adaptive network resilience state
+  const [isVideoPausedForNetwork, setIsVideoPausedForNetwork] = useState(false);
+  const [isRemoteVideoPausedForNetwork, setIsRemoteVideoPausedForNetwork] = useState(false);
+  const [isSimulatedPoorNetwork, setIsSimulatedPoorNetwork] = useState(false);
+
   // Call timer
   const [callDurationSeconds, setCallDurationSeconds] = useState(0);
 
@@ -192,11 +210,21 @@ export function useWebRTC(
   const originalVideoTrackRef = useRef<MediaStreamTrack | null>(null);
   const facingModeRef = useRef<"user" | "environment">("user");
 
+  // Resilience tracking refs
+  const isVideoPausedForNetworkRef = useRef(false);
+  const isSimulatedPoorNetworkRef = useRef(false);
+  const isMicMutedRef = useRef(false);
+  const isCamOffRef = useRef(false);
+  const stableCounterRef = useRef(0);
+
   // Timers & intervals
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const typingResetTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  isMicMutedRef.current = isMicMuted;
+  isCamOffRef.current = isCamOff;
 
   /* ---------------------------------------------------------------- */
   /*  Call timer                                                      */
@@ -215,6 +243,68 @@ export function useWebRTC(
       timerRef.current = null;
     }
   }, []);
+
+  /* ---------------------------------------------------------------- */
+  /*  Broadcast Data Helper                                           */
+  /* ---------------------------------------------------------------- */
+
+  const broadcastDataPayload = useCallback((payload: DataPayload) => {
+    dataConnsRef.current.forEach((conn) => {
+      if (conn.open) {
+        try {
+          conn.send(payload);
+        } catch {
+          // ignore closed channel
+        }
+      }
+    });
+  }, []);
+
+  const sendNetworkModePayload = useCallback(
+    (videoPaused: boolean) => {
+      broadcastDataPayload({
+        type: "network_mode",
+        videoPausedForNetwork: videoPaused,
+      });
+    },
+    [broadcastDataPayload]
+  );
+
+  /* ---------------------------------------------------------------- */
+  /*  WhatsApp-style Adaptive Resilience & Simulation Toggle           */
+  /* ---------------------------------------------------------------- */
+
+  const simulatePoorNetwork = useCallback(
+    (enable?: boolean) => {
+      const nextState =
+        typeof enable === "boolean" ? enable : !isSimulatedPoorNetworkRef.current;
+      isSimulatedPoorNetworkRef.current = nextState;
+      setIsSimulatedPoorNetwork(nextState);
+
+      if (nextState) {
+        setNetworkQuality("poor");
+        isVideoPausedForNetworkRef.current = true;
+        setIsVideoPausedForNetwork(true);
+
+        if (localStreamRef.current) {
+          localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = false));
+          localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !isMicMutedRef.current));
+        }
+        sendNetworkModePayload(true);
+      } else {
+        stableCounterRef.current = 2;
+        setNetworkQuality("excellent");
+        isVideoPausedForNetworkRef.current = false;
+        setIsVideoPausedForNetwork(false);
+
+        if (localStreamRef.current && !isCamOffRef.current) {
+          localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = true));
+        }
+        sendNetworkModePayload(false);
+      }
+    },
+    [sendNetworkModePayload]
+  );
 
   /* ---------------------------------------------------------------- */
   /*  Network monitor across active peer connections                  */
@@ -257,12 +347,41 @@ export function useWebRTC(
         else if (worstRTT > 150 || lossRate > 0.05) quality = "fair";
         else if (worstRTT > 80 || lossRate > 0.02) quality = "good";
 
-        setNetworkQuality(quality);
+        if (!isSimulatedPoorNetworkRef.current) {
+          setNetworkQuality(quality);
+
+          // WhatsApp audio-first adaptation: automatically pause video if poor network
+          if (quality === "poor") {
+            stableCounterRef.current = 0;
+            if (!isVideoPausedForNetworkRef.current) {
+              console.log("[WebRTC Audio-First] Network degraded — pausing video to prioritize audio.");
+              isVideoPausedForNetworkRef.current = true;
+              setIsVideoPausedForNetwork(true);
+
+              if (localStreamRef.current) {
+                localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = false));
+              }
+              sendNetworkModePayload(true);
+            }
+          } else if (quality === "good" || quality === "excellent") {
+            stableCounterRef.current += 1;
+            if (stableCounterRef.current >= 2 && isVideoPausedForNetworkRef.current) {
+              console.log("[WebRTC Audio-First] Network stabilized — restoring video.");
+              isVideoPausedForNetworkRef.current = false;
+              setIsVideoPausedForNetwork(false);
+
+              if (localStreamRef.current && !isCamOffRef.current) {
+                localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = true));
+              }
+              sendNetworkModePayload(false);
+            }
+          }
+        }
       } catch {
         // Stats unavailable
       }
-    }, 3000);
-  }, []);
+    }, 2500);
+  }, [sendNetworkModePayload]);
 
   const stopNetworkMonitor = useCallback(() => {
     if (statsIntervalRef.current) {
@@ -281,7 +400,6 @@ export function useWebRTC(
       dataConnsRef.current.set(remoteId, conn);
 
       conn.on("open", () => {
-        // Send self participant info upon opening
         try {
           conn.send({
             type: "participant_info",
@@ -293,6 +411,7 @@ export function useWebRTC(
             isCamOff: localStreamRef.current
               ? !localStreamRef.current.getVideoTracks().some((t) => t.enabled)
               : false,
+            videoPausedForNetwork: isVideoPausedForNetworkRef.current,
           });
         } catch (e) {
           console.warn("[DataConnection send failed]", e);
@@ -331,10 +450,22 @@ export function useWebRTC(
         } else if (payload.type === "stop_typing") {
           setIsRemoteTyping(false);
           setRemoteTypingName(undefined);
+        } else if (payload.type === "network_mode") {
+          setIsRemoteVideoPausedForNetwork(!!payload.videoPausedForNetwork);
+          setRemoteParticipants((prev) =>
+            prev.map((p) =>
+              p.peerId === remoteId
+                ? { ...p, isVideoPausedForNetwork: !!payload.videoPausedForNetwork }
+                : p
+            )
+          );
         } else if (
           payload.type === "media_state" ||
           payload.type === "participant_info"
         ) {
+          if (payload.videoPausedForNetwork !== undefined) {
+            setIsRemoteVideoPausedForNetwork(payload.videoPausedForNetwork);
+          }
           setRemoteParticipants((prev) => {
             const idx = prev.findIndex((p) => p.peerId === remoteId);
             if (idx !== -1) {
@@ -345,6 +476,10 @@ export function useWebRTC(
                 role: payload.senderRole || updated[idx]!.role,
                 isMicMuted: payload.isMicMuted ?? updated[idx]!.isMicMuted,
                 isCamOff: payload.isCamOff ?? updated[idx]!.isCamOff,
+                isVideoPausedForNetwork:
+                  payload.videoPausedForNetwork !== undefined
+                    ? payload.videoPausedForNetwork
+                    : updated[idx]!.isVideoPausedForNetwork,
               };
               return updated;
             } else {
@@ -359,6 +494,7 @@ export function useWebRTC(
                   stream: null,
                   isMicMuted: payload.isMicMuted ?? false,
                   isCamOff: payload.isCamOff ?? false,
+                  isVideoPausedForNetwork: payload.videoPausedForNetwork ?? false,
                 },
               ];
             }
@@ -476,7 +612,6 @@ export function useWebRTC(
         });
       }
 
-      // Connect data channel if not connected
       if (!dataConnsRef.current.has(targetId)) {
         try {
           const dataConn = peer.connect(targetId, {
@@ -489,7 +624,6 @@ export function useWebRTC(
         }
       }
 
-      // Connect media call if local stream is ready and not already called
       if (localStreamRef.current && !mediaConnsRef.current.has(targetId)) {
         try {
           const call = peer.call(targetId, localStreamRef.current, {
@@ -544,7 +678,6 @@ export function useWebRTC(
           isCamOff?: boolean;
         }> = data.peers || [];
 
-        // Connect to any new peers in the room using deterministic initiator
         for (const other of otherPeers) {
           if (other.peerId === currentPeerId) continue;
 
@@ -558,7 +691,6 @@ export function useWebRTC(
           }
         }
 
-        // Cleanup peers that vanished from room presence
         const activeIds = new Set(otherPeers.map((p) => p.peerId));
         setRemoteParticipants((prev) =>
           prev.filter((p) => {
@@ -606,10 +738,8 @@ export function useWebRTC(
         setPeerId(openId);
         setConnectionState("waiting");
 
-        // Announce presence immediately
         syncRoomPresence(openId);
 
-        // Start periodic heartbeat
         if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
         heartbeatIntervalRef.current = setInterval(() => {
           syncRoomPresence(openId);
@@ -645,13 +775,11 @@ export function useWebRTC(
         }, 1500);
       });
 
-      // Handle incoming calls (multi-party)
       peer.on("call", (call) => {
         call.answer(localStreamRef.current || undefined);
         handleMediaConnection(call);
       });
 
-      // Handle incoming data connections
       peer.on("connection", (conn) => {
         handleDataConnection(conn);
       });
@@ -684,7 +812,6 @@ export function useWebRTC(
         localStreamRef.current = stream;
         setLocalStream(stream);
 
-        // If peer already initialized, call any existing remote connections
         if (peerRef.current && peerRef.current.open) {
           dataConnsRef.current.forEach((_, remoteId) => {
             if (!mediaConnsRef.current.has(remoteId)) {
@@ -729,7 +856,6 @@ export function useWebRTC(
     initPeer(id);
 
     return () => {
-      // Leave room presence API
       if (id && roomId) {
         fetch(
           `/api/telehealth/rooms/${encodeURIComponent(roomId)}?peerId=${encodeURIComponent(id)}`,
@@ -743,7 +869,6 @@ export function useWebRTC(
       stopCallTimer();
       stopNetworkMonitor();
 
-      // Close all active connections
       mediaConnsRef.current.forEach((call) => call.close());
       dataConnsRef.current.forEach((conn) => conn.close());
       mediaConnsRef.current.clear();
@@ -764,7 +889,6 @@ export function useWebRTC(
     stopLocalMedia,
   ]);
 
-  // If specific targetPeerId was supplied (e.g. from doctor simulator URL)
   useEffect(() => {
     if (targetPeerId && peerId && localStream && connectionState === "waiting") {
       const timer = setTimeout(() => {
@@ -777,18 +901,6 @@ export function useWebRTC(
   /* ---------------------------------------------------------------- */
   /*  Media Controls (Mic, Cam, Screen Share, Switch Camera)          */
   /* ---------------------------------------------------------------- */
-
-  const broadcastDataPayload = useCallback((payload: DataPayload) => {
-    dataConnsRef.current.forEach((conn) => {
-      if (conn.open) {
-        try {
-          conn.send(payload);
-        } catch {
-          // ignore closed channel
-        }
-      }
-    });
-  }, []);
 
   const toggleMic = useCallback(() => {
     if (!localStreamRef.current) return;
@@ -850,7 +962,6 @@ export function useWebRTC(
         }
         localStreamRef.current.addTrack(newVideoTrack);
 
-        // Replace track in all active RTCPeerConnections
         mediaConnsRef.current.forEach((call) => {
           const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
           if (pc) {
@@ -1015,16 +1126,22 @@ export function useWebRTC(
     }
   }, [peerId, syncRoomPresence]);
 
-  // Backward compatibility: remoteStream is the first remote stream
   const firstRemoteStream =
     remoteParticipants.find((p) => p.stream !== null)?.stream || null;
   const firstRemotePeerId = remoteParticipants[0]?.peerId || null;
+
+  const isAudioOnlyFallback =
+    isVideoPausedForNetwork ||
+    isRemoteVideoPausedForNetwork ||
+    isSimulatedPoorNetwork ||
+    networkQuality === "poor";
 
   return {
     localStream,
     remoteStream: firstRemoteStream,
     remoteParticipants,
     remotePeers: remoteParticipants, // alias
+    remotePeersCount: remoteParticipants.length,
     connectionState,
     networkQuality,
     isMicMuted,
@@ -1041,6 +1158,13 @@ export function useWebRTC(
     error,
     facingMode,
     participantCount: remoteParticipants.length + 1,
+
+    // WhatsApp-style Adaptive Audio-First Resilience
+    isVideoPausedForNetwork,
+    isRemoteVideoPausedForNetwork,
+    isAudioOnlyFallback,
+    isSimulatedPoorNetwork,
+    simulatePoorNetwork,
 
     startLocalMedia,
     stopLocalMedia,

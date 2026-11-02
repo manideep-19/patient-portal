@@ -492,7 +492,11 @@ export default function TelehealthRoomPage({ params }: PageProps) {
                 {formatTimer(rtc.callDurationSeconds)}
               </span>
               <span>•</span>
-              <NetworkIndicator quality={rtc.networkQuality} />
+              <NetworkIndicator
+                quality={rtc.networkQuality}
+                isAudioOnlyFallback={rtc.isAudioOnlyFallback}
+                onToggleSimulate={() => rtc.simulatePoorNetwork()}
+              />
             </div>
           </div>
         </div>
