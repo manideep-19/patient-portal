@@ -12,6 +12,7 @@ import {
   MonitorOff,
   MessageSquare,
   UserPlus,
+  Users,
 } from "lucide-react";
 
 interface CallControlsProps {
@@ -20,10 +21,13 @@ interface CallControlsProps {
   isScreenSharing: boolean;
   isChatOpen: boolean;
   unreadChatCount: number;
+  participantsCount?: number;
+  isParticipantsOpen?: boolean;
   onToggleMic: () => void;
   onToggleCamera: () => void;
   onToggleScreenShare: () => void;
   onToggleChat: () => void;
+  onToggleParticipants?: () => void;
   onSwitchCamera: () => void;
   onInvite?: () => void;
   onEndCall: () => void;
@@ -35,10 +39,13 @@ export function CallControls({
   isScreenSharing,
   isChatOpen,
   unreadChatCount,
+  participantsCount = 1,
+  isParticipantsOpen = false,
   onToggleMic,
   onToggleCamera,
   onToggleScreenShare,
   onToggleChat,
+  onToggleParticipants,
   onSwitchCamera,
   onInvite,
   onEndCall,
@@ -113,6 +120,25 @@ export function CallControls({
             onClick={onInvite}
             activeClass="bg-brand text-white shadow-soft"
           />
+        )}
+
+        {/* Participants Roster Toggle */}
+        {onToggleParticipants && (
+          <div className="relative">
+            <ControlButton
+              active={isParticipantsOpen}
+              icon={<Users className="w-4.5 h-4.5 sm:w-5 sm:h-5" />}
+              label="Participants"
+              title={isParticipantsOpen ? "Hide Attendees" : "Show Attendees"}
+              onClick={onToggleParticipants}
+              activeClass="bg-brand text-white shadow-soft"
+            />
+            {participantsCount > 0 && (
+              <span className="absolute -top-1 -right-1 min-w-[20px] h-5 px-1 bg-white/25 text-white text-[10px] font-bold rounded-full flex items-center justify-center border-2 border-slate-950">
+                {participantsCount}
+              </span>
+            )}
+          </div>
         )}
 
         {/* Chat Toggle */}

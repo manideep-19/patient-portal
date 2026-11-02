@@ -21,20 +21,21 @@ import {
   Stethoscope,
   Pill,
   User,
+  Users,
   Activity,
   CheckCircle2,
   RefreshCw,
   ExternalLink,
   UserPlus,
-  Users,
+  Share2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { toast } from "sonner";
-import { useWebRTC } from "@/lib/use-webrtc";
-import { VideoPlayer } from "@/components/telehealth/video-player";
+import { useWebRTC, type ParticipantRole } from "@/lib/use-webrtc";
 import { VideoGrid } from "@/components/telehealth/video-grid";
+import { ParticipantsDrawer } from "@/components/telehealth/participants-drawer";
 import { InviteModal } from "@/components/telehealth/invite-modal";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
 import { usePatient } from "@/context/patient-context";
@@ -58,19 +59,14 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
   const { patient, getAppointmentById } = usePatient();
   const appointment = getAppointmentById(resolvedParams.id);
 
-  const initialPatientPeerId =
-    searchParams.get("patientPeerId") ||
-    `smrko-${resolvedParams.id}-patient`;
-
-  const [targetPeerId, setTargetPeerId] = useState(initialPatientPeerId);
   const [activeTab, setActiveTab] = useState<"chat" | "notes">("chat");
   const [chatInput, setChatInput] = useState("");
   const [clinicalNotes, setClinicalNotes] = useState(
     "Patient reporting good progress. Follicular scan within normal limits. Recommended continuation of current dosage with review in 7 days."
   );
   const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
-  const [hasAttemptedConnect, setHasAttemptedConnect] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -89,35 +85,6 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-connect once local media and peer are ready if patientPeerId was in URL
-  useEffect(() => {
-    const urlPeerId = searchParams.get("patientPeerId");
-    if (
-      urlPeerId &&
-      rtc.peerId &&
-      rtc.localStream &&
-      rtc.connectionState === "waiting" &&
-      !hasAttemptedConnect
-    ) {
-      setHasAttemptedConnect(true);
-      toast.info("Connecting to patient...", {
-        description: `Target: ${urlPeerId}`,
-      });
-      // Small timeout to allow signaling registration
-      const timer = setTimeout(() => {
-        rtc.connectToPeer(urlPeerId);
-      }, 500);
-      return () => clearTimeout(timer);
-    }
-  }, [
-    searchParams,
-    rtc.peerId,
-    rtc.localStream,
-    rtc.connectionState,
-    hasAttemptedConnect,
-    rtc,
-  ]);
-
   // Scroll chat to bottom
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -127,212 +94,193 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
   const formatTimer = (totalSeconds: number) => {
     const mins = Math.floor(totalSeconds / 60);
     const secs = totalSeconds % 60;
-    return `${mins.toString().padStart(2, "0")}:${secs
-      .toString()
-      .padStart(2, "0")}`;
-  };
-
-  const handleManualConnect = () => {
-    if (!targetPeerId.trim()) {
-      toast.error("Please enter patient Peer ID");
-      return;
-    }
-    rtc.connectToPeer(targetPeerId.trim());
-    toast.info("Connecting to patient...", {
-      description: `Peer: ${targetPeerId.trim()}`,
-    });
+    return `${mins.toString().padStart(2, "0")}:${secs.toString().padStart(2, "0")}`;
   };
 
   const handleSendMessage = (e: React.FormEvent) => {
     e.preventDefault();
     if (!chatInput.trim()) return;
-    rtc.sendChatMessage(chatInput);
-    rtc.sendTypingIndicator(false);
+    rtc.sendChatMessage(chatInput.trim());
     setChatInput("");
+    rtc.sendTypingIndicator(false);
   };
 
   const handleQuickResponse = (text: string) => {
     rtc.sendChatMessage(text);
-    toast.success("Quick response sent");
   };
 
   const handleEndCall = () => {
     setShowEndConfirm(false);
     rtc.disconnect();
-    toast.info("Consultation completed as Doctor");
-    router.push(`/telehealth/${resolvedParams.id}`);
+    toast.success("Consultation finalized", {
+      description: "Clinical notes have been saved to the patient record.",
+    });
+    router.push("/appointments");
+  };
+
+  const totalAttendees = 1 + rtc.remoteParticipants.length;
+
+  const getRolePill = (role?: ParticipantRole | string) => {
+    switch (role) {
+      case "doctor":
+        return (
+          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+            Doctor
+          </span>
+        );
+      case "family":
+        return (
+          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-violet-500/20 text-violet-300 border border-violet-500/30">
+            Family/Spouse
+          </span>
+        );
+      case "coordinator":
+        return (
+          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+            Care Team
+          </span>
+        );
+      default:
+        return (
+          <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-brand/20 text-brand-soft border border-brand/30">
+            Patient
+          </span>
+        );
+    }
   };
 
   return (
-    <div className="h-[100dvh] w-full bg-slate-950 text-white flex flex-col overflow-hidden select-none">
-      {/* Top Clinical Header */}
-      <header className="h-16 px-4 sm:px-6 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between shrink-0 z-20 backdrop-blur-md">
+    <div className="h-screen w-full bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-sans">
+      {/* Top Bar */}
+      <header className="h-16 border-b border-slate-800 bg-slate-900/90 px-4 md:px-6 flex items-center justify-between shrink-0 backdrop-blur-md z-30">
         <div className="flex items-center gap-3">
           <Link
-            href={`/telehealth/${resolvedParams.id}`}
+            href="/appointments"
             className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
-            title="Back to Patient View"
+            title="Back to Appointments"
           >
             <ArrowLeft className="w-4 h-4" />
           </Link>
           <div className="flex items-center gap-2.5">
-            <div className="w-9 h-9 rounded-xl bg-brand/20 border border-brand/30 flex items-center justify-center text-brand">
-              <Stethoscope className="w-5 h-5" />
-            </div>
+            <Avatar name="Dr. Sunita Sharma" size="sm" />
             <div>
-              <div className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                <span>Doctor Consultation Console</span>
-                <Badge variant="primary" size="sm" className="text-[10px] py-0 px-2">
-                  Dr. Sunita Sharma (MD)
-                </Badge>
-              </div>
-              <div className="text-[11px] text-slate-400 flex items-center gap-2">
-                <span>Patient: <strong className="text-slate-200">{patientName}</strong></span>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  <Clock className="w-3 h-3 text-brand" />
-                  {formatTimer(rtc.callDurationSeconds)}
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-slate-100">
+                  Doctor Consultation Console
                 </span>
-                <span>•</span>
-                <NetworkIndicator quality={rtc.networkQuality} />
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                  Doctor View
+                </span>
               </div>
+              <p className="text-[11px] text-slate-400">
+                Patient: <strong className="text-slate-200">{patientName}</strong> • Room:{" "}
+                <code className="text-brand font-mono">{resolvedParams.id}</code>
+              </p>
             </div>
           </div>
         </div>
 
-        {/* Right Header Status */}
-        <div className="flex items-center gap-2.5">
-          {/* Invite / Add Participants */}
+        {/* Right Info & Attendees buttons */}
+        <div className="flex items-center gap-2.5 sm:gap-3">
+          <NetworkIndicator quality={rtc.networkQuality} />
+
           <Button
             size="sm"
             variant="outline"
             onClick={() => setIsInviteModalOpen(true)}
-            className="h-8 gap-1.5 bg-slate-800 border-slate-700 text-xs text-slate-200 hover:text-white"
+            className="h-8 gap-1.5 bg-slate-800 border-slate-700 text-xs text-slate-200 hover:text-white cursor-pointer"
           >
             <UserPlus className="w-3.5 h-3.5 text-brand" />
-            <span>Invite / Add ({rtc.participantCount}/4)</span>
+            <span className="hidden sm:inline">Invite / Add ({totalAttendees}/4)</span>
+            <span className="sm:hidden">Invite</span>
           </Button>
 
-          <div className="hidden md:flex items-center gap-2 text-xs text-slate-300 bg-slate-800/80 px-3 py-1.5 rounded-full border border-slate-700">
-            <ShieldCheck className="w-3.5 h-3.5 text-success" />
-            <span>HIPAA Compliant P2P WebRTC</span>
+          <button
+            onClick={() => setIsParticipantsOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold border border-slate-700 transition-colors cursor-pointer"
+          >
+            <Users className="w-3.5 h-3.5 text-brand" />
+            <span>{totalAttendees} in Call</span>
+          </button>
+
+          <div className="hidden md:flex items-center gap-1.5 text-xs text-slate-300 font-mono bg-slate-950 px-3 py-1.5 rounded-full border border-slate-800">
+            <Clock className="w-3.5 h-3.5 text-brand" />
+            <span>{formatTimer(rtc.callDurationSeconds)}</span>
           </div>
+
           {rtc.connectionState === "connected" ? (
             <Badge variant="success" size="sm" className="flex items-center gap-1">
               <span className="w-2 h-2 rounded-full bg-success animate-pulse" />
-              <span>{rtc.participantCount > 2 ? `Group Call (${rtc.participantCount})` : "In Consultation"}</span>
+              <span>
+                {totalAttendees > 2
+                  ? `Group Call (${totalAttendees})`
+                  : "Live Consultation"}
+              </span>
             </Badge>
           ) : (
-            <Badge variant="outline" size="sm" className="text-amber-400 border-amber-400/30">
-              {rtc.connectionState === "connecting"
-                ? "Connecting..."
-                : rtc.connectionState === "waiting"
-                ? "Ready to Connect"
-                : rtc.connectionState}
+            <Badge
+              variant="outline"
+              size="sm"
+              className="text-amber-400 border-amber-400/30"
+            >
+              <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping mr-1" />
+              Waiting for Patient
             </Badge>
           )}
+
+          <Button
+            size="sm"
+            variant="destructive"
+            onClick={() => setShowEndConfirm(true)}
+            className="h-8 gap-1.5 px-3 rounded-xl font-bold cursor-pointer"
+          >
+            <PhoneOff className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">End Call</span>
+          </Button>
         </div>
       </header>
 
-      {/* Manual Connect Banner (if disconnected or not connected yet) */}
-      {rtc.connectionState !== "connected" && (
-        <div className="bg-slate-900 border-b border-slate-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
-          <div className="flex items-center gap-2 text-slate-300">
-            <Activity className="w-4 h-4 text-brand" />
-            <span>Connect to Patient Stream:</span>
-            <input
-              type="text"
-              value={targetPeerId}
-              onChange={(e) => setTargetPeerId(e.target.value)}
-              placeholder="Enter Patient Peer ID..."
-              className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-100 font-mono w-64 sm:w-80 focus:outline-hidden focus:border-brand"
-            />
-            <Button
-              size="sm"
-              variant="primary"
-              onClick={handleManualConnect}
-              disabled={rtc.connectionState === "connecting"}
-              className="text-xs h-7"
-            >
-              <RefreshCw
-                className={`w-3.5 h-3.5 mr-1 ${
-                  rtc.connectionState === "connecting" ? "animate-spin" : ""
-                }`}
-              />
-              Connect
-            </Button>
-          </div>
-          <div className="text-[11px] text-slate-400 flex items-center gap-2">
-            <span>Doctor ID:</span>
-            <code className="text-brand font-mono text-[11px] bg-slate-950 px-2 py-0.5 rounded border border-slate-800">
-              {rtc.peerId || "Initializing..."}
-            </code>
-          </div>
-        </div>
-      )}
-
       {/* Main Content Area */}
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-        {/* Left: Video Area */}
+        {/* Left: Multi-Party Video Area */}
         <div className="flex-1 flex flex-col relative bg-slate-950 overflow-hidden">
-          {/* Main Video: Multi-Party Video Grid */}
-          <div className="relative flex-1 w-full h-full flex items-center justify-center bg-slate-950">
-            {rtc.remotePeers.length > 0 ? (
-              <VideoGrid
-                localStream={rtc.localStream}
-                localLabel="Dr. Sunita Sharma"
-                localMirror={false}
-                localCamOff={rtc.isCamOff}
-                localMicMuted={rtc.isMicMuted}
-                remotePeers={rtc.remotePeers}
-                onRetry={rtc.restartConnection}
-                className="w-full h-full"
-              />
-            ) : (
-              <div className="flex flex-col items-center justify-center p-8 text-center max-w-md space-y-4">
-                <div className="w-20 h-20 rounded-3xl bg-slate-900 border border-slate-800 flex items-center justify-center text-slate-500 shadow-xl">
-                  <User className="w-10 h-10 text-brand" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-slate-100">
-                    Waiting for {patientName}
-                  </h3>
-                  <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
-                    Make sure the patient has the consultation room open in another tab
-                    or on their mobile device. You can also invite other specialists or family members.
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleManualConnect}
-                    className="text-xs"
-                  >
-                    <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
-                    Retry Connection
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="primary"
-                    onClick={() => setIsInviteModalOpen(true)}
-                    className="text-xs"
-                  >
-                    <UserPlus className="w-3.5 h-3.5 mr-1.5" />
-                    Invite Others
-                  </Button>
+          <div className="relative flex-1 w-full h-full overflow-hidden">
+            <VideoGrid
+              localStream={rtc.localStream}
+              localDisplayName="Dr. Sunita Sharma"
+              localLabel="Dr. Sunita Sharma"
+              localRole="doctor"
+              localMirror={false}
+              isLocalMicMuted={rtc.isMicMuted}
+              isLocalCamOff={rtc.isCamOff}
+              isLocalScreenSharing={rtc.isScreenSharing}
+              remoteParticipants={rtc.remoteParticipants}
+              remotePeers={rtc.remoteParticipants}
+              onRetry={rtc.restartConnection}
+              className="w-full h-full"
+              emptyStateAction={
+                <div className="flex flex-col sm:flex-row gap-2">
                   <a
-                    href={`/telehealth/${resolvedParams.id}`}
+                    href={`/telehealth/${resolvedParams.id}?role=patient`}
                     target="_blank"
                     rel="noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 transition-colors"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand hover:bg-brand-dark text-xs text-white shadow-soft transition-colors"
                   >
                     <ExternalLink className="w-3.5 h-3.5" />
-                    Open Patient Tab
+                    <span>Open Patient Tab</span>
+                  </a>
+                  <a
+                    href={`/telehealth/${resolvedParams.id}?role=family&name=Vikram%20Sharma`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-violet-600 hover:bg-violet-700 text-xs text-white shadow-soft transition-colors"
+                  >
+                    <ExternalLink className="w-3.5 h-3.5" />
+                    <span>Open Spouse Tab</span>
                   </a>
                 </div>
-              </div>
-            )}
+              }
+            />
           </div>
 
           {/* Doctor Controls Dock */}
@@ -384,22 +332,13 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
               >
                 <MonitorUp className="w-4 h-4" />
               </button>
-
-              {/* Invite / Add Participants */}
-              <button
-                onClick={() => setIsInviteModalOpen(true)}
-                className="p-3 rounded-full transition-colors cursor-pointer bg-slate-800 text-brand hover:bg-slate-700"
-                title="Add Specialists or Family Members (Up to 4 participants)"
-              >
-                <UserPlus className="w-4 h-4" />
-              </button>
             </div>
 
             {/* Middle Quick Info */}
             <div className="hidden sm:flex items-center gap-3 text-xs text-slate-400">
               <span className="flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                Doctor Audio & Video Active
+                <span>Doctor HD Video & Audio Connected</span>
               </span>
             </div>
 
@@ -409,7 +348,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                 variant="destructive"
                 size="sm"
                 onClick={() => setShowEndConfirm(true)}
-                className="gap-1.5 px-4 rounded-full font-bold"
+                className="gap-1.5 px-4 rounded-full font-bold cursor-pointer"
               >
                 <PhoneOff className="w-4 h-4" />
                 <span>End Consultation</span>
@@ -418,7 +357,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
           </div>
         </div>
 
-        {/* Right: Clinical Drawer (Chat & Clinical Notes) */}
+        {/* Right: Clinical Sidebar (Chat & Clinical Notes) */}
         <div className="w-full lg:w-96 border-t lg:border-t-0 lg:border-l border-slate-800 bg-slate-900 flex flex-col shrink-0 h-80 lg:h-auto">
           {/* Tabs */}
           <div className="flex border-b border-slate-800 shrink-0">
@@ -431,7 +370,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
               }`}
             >
               <MessageSquare className="w-4 h-4" />
-              <span>Live Patient Chat</span>
+              <span>Multi-Party Chat</span>
               {rtc.chatMessages.length > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full bg-brand/20 text-brand text-[10px]">
                   {rtc.chatMessages.length}
@@ -472,14 +411,18 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                 {rtc.chatMessages.length === 0 ? (
                   <div className="h-full flex flex-col items-center justify-center text-center p-4 text-slate-500 text-xs">
                     <MessageSquare className="w-8 h-8 mb-2 stroke-1 text-slate-600" />
-                    <span>Live encrypted chat channel</span>
+                    <span>Group Consultation Chat</span>
                     <span className="text-[10px] text-slate-600 mt-1">
-                      Messages sent here are delivered instantly via WebRTC P2P DataChannel.
+                      Messages sent here are broadcasted to all connected attendees.
                     </span>
                   </div>
                 ) : (
                   rtc.chatMessages.map((msg) => {
                     const isDoctor = msg.sender === "local";
+                    const senderLabel =
+                      msg.senderName ||
+                      (isDoctor ? "Dr. Sunita Sharma" : patientName);
+
                     return (
                       <div
                         key={msg.id}
@@ -487,8 +430,14 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                           isDoctor ? "items-end" : "items-start"
                         }`}
                       >
-                        <div className="text-[10px] text-slate-400 mb-0.5 px-1">
-                          {isDoctor ? "Dr. Sunita Sharma (You)" : patientName} • {msg.timestamp}
+                        <div className="text-[10px] text-slate-400 mb-0.5 px-1 flex items-center gap-1.5">
+                          <span className="font-semibold text-slate-300">
+                            {senderLabel}
+                          </span>
+                          {getRolePill(msg.senderRole)}
+                          <span className="text-[9px] text-slate-500">
+                            • {msg.timestamp}
+                          </span>
                         </div>
                         <div
                           className={`max-w-[85%] rounded-2xl px-3 py-2 text-xs leading-relaxed ${
@@ -508,7 +457,9 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                 {rtc.isRemoteTyping && (
                   <div className="flex items-center gap-1.5 text-xs text-slate-400 p-1">
                     <span className="w-1.5 h-1.5 rounded-full bg-brand animate-ping" />
-                    <span className="text-[11px]">{patientName} is typing...</span>
+                    <span className="text-[11px]">
+                      {rtc.remoteTypingName || patientName} is typing...
+                    </span>
                   </div>
                 )}
                 <div ref={chatEndRef} />
@@ -527,7 +478,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                     rtc.sendTypingIndicator(e.target.value.length > 0);
                   }}
                   onBlur={() => rtc.sendTypingIndicator(false)}
-                  placeholder="Type message to patient..."
+                  placeholder="Send message to all attendees..."
                   className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:outline-hidden focus:border-brand"
                 />
                 <button
@@ -570,7 +521,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                   </div>
                   <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                     <span className="text-slate-400 block">Pulse</span>
-                    <strong className="text-slate-200 text-xs">72 bpm</strong>
+                    <strong className="text-slate-200 text-xs">74 bpm</strong>
                   </div>
                   <div className="p-2 rounded-xl bg-slate-900 border border-slate-800">
                     <span className="text-slate-400 block">SpO2</span>
@@ -579,76 +530,109 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                 </div>
               </div>
 
-              {/* Prescriptions */}
+              {/* Active IVF Cycle Context */}
+              {patient?.activeCarePlan && (
+                <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-1.5 text-xs">
+                  <div className="font-semibold text-slate-200 flex items-center gap-1.5">
+                    <Sparkles className="w-3.5 h-3.5 text-brand" />
+                    <span>Ongoing Care Protocol</span>
+                  </div>
+                  <p className="text-[11px] text-slate-300">
+                    {patient.activeCarePlan.title}
+                  </p>
+                  <p className="text-[10px] text-slate-400">
+                    Stage {patient.activeCarePlan.currentStageNumber} of{" "}
+                    {patient.activeCarePlan.totalStages}:{" "}
+                    {patient.activeCarePlan.currentStageName}
+                  </p>
+                </div>
+              )}
+
+              {/* Active Prescriptions */}
               <div className="p-3 rounded-2xl bg-slate-950 border border-slate-800 space-y-2 text-xs">
                 <div className="font-semibold text-slate-200 flex items-center gap-1.5">
                   <Pill className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Active Prescriptions</span>
+                  <span>Active Cycle Medications</span>
                 </div>
-                <div className="text-[11px] text-slate-300 space-y-1">
-                  <div className="flex justify-between py-1 border-b border-slate-800">
-                    <span>Folic Acid 5mg</span>
-                    <span className="text-slate-400">1x daily</span>
+                <div className="space-y-1 text-[11px]">
+                  <div className="flex justify-between text-slate-300">
+                    <span>Gonal-F 300 IU Inj</span>
+                    <span className="text-slate-500">Day 9 (Daily)</span>
                   </div>
-                  <div className="flex justify-between py-1 border-b border-slate-800">
-                    <span>Progesterone 200mg</span>
-                    <span className="text-slate-400">Nightly</span>
+                  <div className="flex justify-between text-slate-300">
+                    <span>Cetrotide 0.25mg Inj</span>
+                    <span className="text-slate-500">Morning</span>
+                  </div>
+                  <div className="flex justify-between text-slate-300">
+                    <span>Folvite 5mg Tablet</span>
+                    <span className="text-slate-500">1-0-0</span>
                   </div>
                 </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  fullWidth
-                  onClick={() => toast.success("Prescription updated in portal")}
-                  className="text-xs mt-2"
-                >
-                  <Sparkles className="w-3.5 h-3.5 mr-1 text-brand" />
-                  Issue Updated e-Prescription
-                </Button>
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* End Call Modal */}
-      {showEndConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-xs">
-          <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-800 text-slate-100 p-5 space-y-4 text-center">
-            <div className="w-12 h-12 rounded-full bg-destructive/15 text-destructive mx-auto flex items-center justify-center">
-              <PhoneOff className="w-6 h-6" />
-            </div>
-            <div>
-              <h3 className="text-base font-bold">End Consultation Session?</h3>
-              <p className="text-xs text-slate-400 mt-1">
-                Conclude the video session with {patientName}? Clinical notes will be saved.
-              </p>
-            </div>
-            <div className="flex gap-2.5 pt-2">
-              <Button
-                variant="outline"
-                size="md"
-                fullWidth
-                onClick={() => setShowEndConfirm(false)}
-              >
-                Continue Call
-              </Button>
-              <Button variant="destructive" size="md" fullWidth onClick={handleEndCall}>
-                End Consultation
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Participants Drawer */}
+      <ParticipantsDrawer
+        isOpen={isParticipantsOpen}
+        onClose={() => setIsParticipantsOpen(false)}
+        roomId={resolvedParams.id}
+        localName="Dr. Sunita Sharma"
+        localRole="doctor"
+        isLocalMicMuted={rtc.isMicMuted}
+        isLocalCamOff={rtc.isCamOff}
+        remoteParticipants={rtc.remoteParticipants}
+      />
 
       {/* Invite Modal */}
       <InviteModal
         isOpen={isInviteModalOpen}
         onClose={() => setIsInviteModalOpen(false)}
         roomId={resolvedParams.id}
-        participantCount={rtc.participantCount}
+        participantCount={totalAttendees}
         maxParticipants={4}
       />
+
+      {/* End Call Modal */}
+      {showEndConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-200">
+          <div className="w-full max-w-sm rounded-3xl bg-slate-900 border border-slate-800 p-6 text-center space-y-4 shadow-2xl">
+            <div className="w-12 h-12 rounded-full bg-destructive/15 text-destructive mx-auto flex items-center justify-center">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-100">
+                End Doctor Consultation?
+              </h3>
+              <p className="text-xs text-slate-400 mt-1.5 leading-relaxed">
+                This will finalize the appointment session and save your clinical
+                notes to the patient record.
+              </p>
+            </div>
+            <div className="flex gap-2 pt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                fullWidth
+                onClick={() => setShowEndConfirm(false)}
+                className="bg-slate-800 border-slate-700 text-slate-300 hover:text-white"
+              >
+                Continue Call
+              </Button>
+              <Button
+                variant="destructive"
+                size="sm"
+                fullWidth
+                onClick={handleEndCall}
+              >
+                Finalize & Exit
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

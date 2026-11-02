@@ -8,27 +8,33 @@ import {
   MicOff,
   Pin,
   PinOff,
-  Maximize2,
   Grid,
-  Users,
 } from "lucide-react";
-import type { RemotePeer } from "@/lib/use-webrtc";
+import type { RemoteParticipant, ParticipantRole } from "@/lib/use-webrtc";
 
 interface VideoGridProps {
   localStream: MediaStream | null;
-  localLabel: string;
+  localLabel?: string;
+  localDisplayName?: string;
+  localRole?: ParticipantRole;
   localMirror?: boolean;
   localCamOff?: boolean;
+  isLocalCamOff?: boolean;
   localMicMuted?: boolean;
-  remotePeers: RemotePeer[];
+  isLocalMicMuted?: boolean;
+  isLocalScreenSharing?: boolean;
+  remotePeers?: RemoteParticipant[];
+  remoteParticipants?: RemoteParticipant[];
   /** Called when user taps the Reconnect button */
   onRetry?: () => void;
   className?: string;
+  emptyStateAction?: React.ReactNode;
 }
 
 interface ParticipantTileData {
   id: string;
   name: string;
+  role?: ParticipantRole;
   stream: MediaStream | null;
   isCamOff: boolean;
   isMicMuted: boolean;
@@ -65,52 +71,98 @@ function getAvatarGradient(name: string): string {
   return gradients[Math.abs(hash) % gradients.length];
 }
 
+function getRoleBadge(role?: ParticipantRole) {
+  if (!role) return null;
+  switch (role) {
+    case "doctor":
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/40">
+          Doctor
+        </span>
+      );
+    case "family":
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-500/25 text-violet-300 border border-violet-500/40">
+          Family / Spouse
+        </span>
+      );
+    case "coordinator":
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/25 text-amber-300 border border-amber-500/40">
+          Care Team
+        </span>
+      );
+    case "patient":
+    default:
+      return (
+        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-brand/30 text-brand-soft border border-brand/40">
+          Patient
+        </span>
+      );
+  }
+}
+
 /**
- * World-Class Google Meet & Zoom Adaptive Video Grid
+ * Adaptive Multi-Party Video Grid (Google Meet & Zoom Style)
  *
  * Supports:
- * - 1 Person: Centered prominent tile
+ * - 1 Person: Prominent tile + waiting card with invite actions
  * - 2 People: 2 equal side-by-side tiles (stacked on mobile)
  * - 3 People: Google Meet 2-top + 1-bottom centered layout
- * - 4 People: 2x2 quad gallery grid
+ * - 4+ People: 2x2 quad gallery grid
  * - Spotlight / Pin: Pin any participant to maximize them with side filmstrip
  * - Camera Off: Google Meet circular initials avatar with pulsing aura
  * - Live mic mute/unmute indicators on every tile
+ * - Clinical role badges (Doctor, Patient, Spouse, Coordinator)
  */
 export function VideoGrid({
   localStream,
   localLabel,
+  localDisplayName,
+  localRole = "patient",
   localMirror = true,
-  localCamOff = false,
-  localMicMuted = false,
+  localCamOff,
+  isLocalCamOff,
+  localMicMuted,
+  isLocalMicMuted,
+  isLocalScreenSharing = false,
   remotePeers,
+  remoteParticipants,
   onRetry,
   className = "",
+  emptyStateAction,
 }: VideoGridProps) {
   const [pinnedId, setPinnedId] = useState<string | null>(null);
+
+  const selfName = localDisplayName || localLabel || "You";
+  const selfCamOff = isLocalCamOff !== undefined ? isLocalCamOff : localCamOff ?? false;
+  const selfMicMuted = isLocalMicMuted !== undefined ? isLocalMicMuted : localMicMuted ?? false;
+  const activeRemote = remoteParticipants || remotePeers || [];
 
   // Combine self + all active remote peers into unified list
   const selfParticipant: ParticipantTileData = {
     id: "self",
-    name: localLabel,
+    name: selfName,
+    role: localRole,
     stream: localStream,
-    isCamOff: localCamOff,
-    isMicMuted: localMicMuted,
+    isCamOff: selfCamOff,
+    isMicMuted: selfMicMuted,
     isSelf: true,
-    mirror: localMirror,
+    mirror: localMirror && !isLocalScreenSharing,
   };
 
-  const remoteParticipants: ParticipantTileData[] = remotePeers.map((p) => ({
+  const remoteTileData: ParticipantTileData[] = activeRemote.map((p) => ({
     id: p.peerId,
     name: p.displayName,
+    role: p.role,
     stream: p.stream,
-    isCamOff: p.isCamOff,
-    isMicMuted: p.isMicMuted,
+    isCamOff: p.isCamOff ?? false,
+    isMicMuted: p.isMicMuted ?? false,
     isSelf: false,
     mirror: false,
   }));
 
-  const allParticipants = [selfParticipant, ...remoteParticipants];
+  const allParticipants = [selfParticipant, ...remoteTileData];
   const total = allParticipants.length;
 
   // Toggle pin/spotlight
@@ -124,7 +176,9 @@ export function VideoGrid({
     const filmstrip = allParticipants.filter((p) => p.id !== pinned.id);
 
     return (
-      <div className={`relative w-full h-full bg-slate-950 p-2 sm:p-3 flex flex-col md:flex-row gap-2.5 overflow-hidden ${className}`}>
+      <div
+        className={`relative w-full h-full bg-slate-950 p-2 sm:p-3 flex flex-col md:flex-row gap-2.5 overflow-hidden ${className}`}
+      >
         {/* Main Stage (Pinned Participant) */}
         <div className="flex-1 h-full min-h-0 min-w-0 relative rounded-2xl sm:rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-2xl">
           <ParticipantTile
@@ -176,10 +230,12 @@ export function VideoGrid({
   // =================================================================
 
   return (
-    <div className={`relative w-full h-full bg-slate-950 p-2 sm:p-3 overflow-hidden select-none ${className}`}>
+    <div
+      className={`relative w-full h-full bg-slate-950 p-2 sm:p-3 overflow-hidden select-none ${className}`}
+    >
       {/* 1 Participant: Centered prominent tile */}
       {total === 1 && (
-        <div className="w-full h-full flex items-center justify-center p-2">
+        <div className="w-full h-full flex items-center justify-center p-2 relative">
           <div className="w-full max-w-4xl aspect-video rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-2xl relative">
             <ParticipantTile
               participant={allParticipants[0]}
@@ -188,6 +244,21 @@ export function VideoGrid({
               onRetry={onRetry}
               size="large"
             />
+
+            {/* Waiting Card Overlay when alone */}
+            <div className="absolute inset-x-4 bottom-20 sm:bottom-6 sm:right-6 sm:left-auto sm:max-w-sm p-4 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 text-white shadow-2xl space-y-2 pointer-events-auto z-20">
+              <div className="flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+                <span className="text-xs font-bold text-white">
+                  Waiting for Others to Join
+                </span>
+              </div>
+              <p className="text-[11px] text-white/70 leading-relaxed">
+                Your audio and camera are connected. You can invite the doctor,
+                spouse/family member, or clinical team to this room.
+              </p>
+              {emptyStateAction && <div className="pt-1">{emptyStateAction}</div>}
+            </div>
           </div>
         </div>
       )}
@@ -248,7 +319,7 @@ export function VideoGrid({
         </div>
       )}
 
-      {/* 4 Participants: 2x2 Quad Grid (Zoom / Google Meet Grid) */}
+      {/* 4+ Participants: 2x2 Quad Grid (Zoom / Google Meet Grid) */}
       {total >= 4 && (
         <div className="w-full h-full grid grid-cols-2 grid-rows-2 gap-2.5 sm:gap-3 p-1">
           {allParticipants.slice(0, 4).map((p) => (
@@ -296,7 +367,7 @@ function ParticipantTile({
   onRetry?: () => void;
   size?: "compact" | "medium" | "large";
 }) {
-  const { name, stream, isCamOff, isMicMuted, isSelf, mirror } = participant;
+  const { name, role, stream, isCamOff, isMicMuted, isSelf, mirror } = participant;
   const initials = getInitials(name);
   const gradient = getAvatarGradient(name);
 
@@ -306,7 +377,9 @@ function ParticipantTile({
     : "border border-white/10";
 
   return (
-    <div className={`relative w-full h-full bg-slate-900 overflow-hidden group select-none ${borderRing}`}>
+    <div
+      className={`relative w-full h-full bg-slate-900 overflow-hidden group select-none ${borderRing}`}
+    >
       {/* 1. Video Player (when camera is on and stream exists) */}
       {!isCamOff && stream ? (
         <VideoPlayer
@@ -333,8 +406,8 @@ function ParticipantTile({
           >
             {initials}
           </div>
-          <div className="mt-3 text-xs sm:text-sm font-semibold text-slate-200 truncate max-w-[80%]">
-            {name}
+          <div className="mt-3 text-xs sm:text-sm font-semibold text-slate-200 truncate max-w-[80%] flex items-center gap-1.5">
+            <span>{name}</span>
           </div>
           <div className="mt-0.5 text-[10px] text-slate-500 flex items-center gap-1">
             <VideoOff className="w-3 h-3 text-slate-500" />
@@ -343,16 +416,17 @@ function ParticipantTile({
         </div>
       )}
 
-      {/* 3. Name Pill Overlay (Bottom Left) */}
-      <div className="absolute bottom-2.5 left-2.5 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-black/75 backdrop-blur-md border border-white/10 text-white shadow-lg pointer-events-none">
+      {/* 3. Name Pill Overlay & Role (Bottom Left) */}
+      <div className="absolute bottom-2.5 left-2.5 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-black/75 backdrop-blur-md border border-white/10 text-white shadow-lg pointer-events-none max-w-[85%]">
         <span
           className={`w-1.5 h-1.5 rounded-full shrink-0 ${
             !isMicMuted ? "bg-emerald-400 animate-pulse" : "bg-slate-400"
           }`}
         />
-        <span className="text-[11px] sm:text-xs font-semibold truncate max-w-[140px] sm:max-w-[200px]">
+        <span className="text-[11px] sm:text-xs font-semibold truncate">
           {isSelf ? "You" : name}
         </span>
+        {getRoleBadge(role)}
       </div>
 
       {/* 4. Mic Status Indicator (Top Right) */}
