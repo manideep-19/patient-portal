@@ -12,7 +12,8 @@ interface MultiVideoGridProps {
   remotePeers: RemotePeer[];
   isLocalCamOff: boolean;
   isLocalMicMuted: boolean;
-  isVideoPausedForNetwork: boolean;
+  is240pQuality?: boolean;
+  isVideoPausedForNetwork?: boolean;
   selfName: string;
   selfRole?: "patient" | "doctor";
   onToggleLocalMic?: () => void;
@@ -24,7 +25,7 @@ export function MultiVideoGrid({
   remotePeers,
   isLocalCamOff,
   isLocalMicMuted,
-  isVideoPausedForNetwork,
+  is240pQuality = false,
   selfName,
   selfRole = "patient",
 }: MultiVideoGridProps) {
@@ -34,18 +35,18 @@ export function MultiVideoGrid({
   const getGridClasses = () => {
     switch (remotePeers.length) {
       case 0:
-        return "grid-cols-1 grid-rows-1"; // Only self
+        return "grid-cols-1 grid-rows-1";
       case 1:
-        return "grid-cols-1 sm:grid-cols-2 grid-rows-1 sm:grid-rows-1"; // 2 people
+        return "grid-cols-1 sm:grid-cols-2 grid-rows-1 sm:grid-rows-1";
       case 2:
-        return "grid-cols-1 sm:grid-cols-2 md:grid-cols-3"; // 3 people
+        return "grid-cols-1 sm:grid-cols-2 md:grid-cols-3";
       case 3:
-        return "grid-cols-2 grid-rows-2"; // 4 people (2x2)
+        return "grid-cols-2 grid-rows-2";
       case 4:
       case 5:
-        return "grid-cols-2 sm:grid-cols-3"; // 5 or 6 people
+        return "grid-cols-2 sm:grid-cols-3";
       default:
-        return "grid-cols-2 sm:grid-cols-3 md:grid-cols-4"; // 6+ people
+        return "grid-cols-2 sm:grid-cols-3 md:grid-cols-4";
     }
   };
 
@@ -95,7 +96,7 @@ export function MultiVideoGrid({
                 label={peer.displayName}
                 objectFit="cover"
                 isCamOff={peer.isCamOff}
-                isAudioOnlyFallback={peer.isVideoPausedForNetwork}
+                is240pQuality={peer.is240p}
                 fallbackName={peer.displayName}
                 fallbackAvatar={fallbackAvatar}
                 fallbackRole={isDoctor ? "Doctor" : "Patient"}
@@ -136,19 +137,8 @@ export function MultiVideoGrid({
               className="w-full h-full"
               label={`${selfName} (You)`}
               objectFit="cover"
+              is240pQuality={is240pQuality}
             />
-          )}
-
-          {/* WhatsApp-style audio-only local status badge */}
-          {isVideoPausedForNetwork && !isLocalCamOff && (
-            <div className="absolute inset-0 bg-slate-950/85 backdrop-blur-xs flex flex-col items-center justify-center text-center p-3 z-20 pointer-events-none">
-              <span className="text-xs text-amber-300 font-bold leading-tight">
-                Video Paused (Weak Network)
-              </span>
-              <span className="text-[10px] text-emerald-400 font-semibold mt-1">
-                Audio Stream Active
-              </span>
-            </div>
           )}
 
           {/* Bottom Info Bar for Self */}
@@ -171,4 +161,3 @@ export function MultiVideoGrid({
     </div>
   );
 }
-

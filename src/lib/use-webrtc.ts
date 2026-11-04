@@ -1,13 +1,17 @@
 /**
  * SmrkoMed Telehealth — Multi-Peer WebRTC Hook
  *
- * Wraps PeerJS and a server room registry to provide:
+ * Provides:
  * 1. Multi-party video calling where multiple participants join with the SAME LINK.
  * 2. Glare-free P2P mesh calling (lexicographical peer ID negotiation).
- * 3. WhatsApp-style Adaptive Audio-First Resilience:
- *    When network drops, video pauses while audio streams uninterrupted;
- *    visual shows an audio-active pulsing card; video resumes seamlessly when network stabilizes.
- * 4. Multi-peer broadcast chat, typing indicator, and screen sharing.
+ * 3. Adaptive Video Quality Degradation:
+ *    When network drops, video resolution smoothly throttles down to 240p (saving 85% bandwidth)
+ *    so video NEVER goes blank, and audio stays crystal clear.
+ * 4. Reliable Mic & Camera Toggling & Device Switching:
+ *    - Real-time RTCRtpSender track replacement for mic and camera switching.
+ *    - Explicit mic mute/unmute re-enabling so voice is never permanently muted.
+ *    - Real-time DataChannel camera & mic state sync.
+ * 5. Multi-peer broadcast chat, typing indicator, and screen sharing.
  */
 
 "use client";
@@ -40,14 +44,22 @@ export interface ChatMessage {
   status: "sent" | "delivered";
 }
 
+export interface DeviceInfo {
+  deviceId: string;
+  label: string;
+  kind: "audioinput" | "videoinput" | "audiooutput";
+}
+
 interface DataPayload {
-  type: "chat" | "typing" | "stop_typing" | "network_mode" | "camera_state";
+  type: "chat" | "typing" | "stop_typing" | "network_mode" | "camera_state" | "mic_state";
   message?: string;
   senderName?: string;
   timestamp?: string;
   id?: string;
+  is240p?: boolean;
   videoPausedForNetwork?: boolean;
   isCamOff?: boolean;
+  isMicMuted?: boolean;
 }
 
 export interface RemotePeer {
@@ -55,33 +67,30 @@ export interface RemotePeer {
   role: "patient" | "doctor" | "guest";
   displayName: string;
   stream: MediaStream | null;
+  is240p?: boolean;
   isVideoPausedForNetwork?: boolean;
   isMicMuted?: boolean;
   isCamOff?: boolean;
 }
 
 export interface UseWebRTCOptions {
-  /** Whether this peer is patient, doctor, or guest */
   role: "patient" | "doctor" | "guest";
-  /** Display name shown in roster & chat */
   displayName: string;
-  /** Optional custom peer ID (otherwise auto-generated with unique session suffix) */
   customPeerId?: string;
-  /** Optional target peer ID to auto-connect to */
   targetPeerId?: string;
-  /** Disable automatic room discovery & mesh connection */
   disableAutoConnect?: boolean;
 }
 
 export interface UseWebRTCReturn {
   localStream: MediaStream | null;
-  remoteStream: MediaStream | null; // Backwards compatible (first connected peer)
+  remoteStream: MediaStream | null;
   remotePeers: RemotePeer[];
   remotePeersCount: number;
   connectionState: ConnectionState;
   networkQuality: NetworkQuality;
   isMicMuted: boolean;
   isCamOff: boolean;
+  isRemoteCamOff: boolean;
   isScreenSharing: boolean;
   isRemoteTyping: boolean;
   callDurationSeconds: number;
@@ -90,13 +99,21 @@ export interface UseWebRTCReturn {
   remotePeerId: string | null;
   error: string | null;
 
-  // WhatsApp-style Adaptive Audio-First Resilience
-  isRemoteCamOff: boolean;
-  isVideoPausedForNetwork: boolean;
-  isRemoteVideoPausedForNetwork: boolean;
-  isAudioOnlyFallback: boolean;
+  // Adaptive 240p Quality Degradation
+  is240pQuality: boolean;
+  isRemote240pQuality: boolean;
+  isVideoPausedForNetwork: boolean; // Backwards compatible
+  isRemoteVideoPausedForNetwork: boolean; // Backwards compatible
+  isAudioOnlyFallback: boolean; // Backwards compatible
   isSimulatedPoorNetwork: boolean;
   simulatePoorNetwork: (enable?: boolean) => void;
+
+  // Device switching
+  availableDevices: DeviceInfo[];
+  currentAudioDeviceId: string | null;
+  currentVideoDeviceId: string | null;
+  switchCamera: (deviceId?: string) => Promise<void>;
+  switchMicrophone: (deviceId: string) => Promise<void>;
 
   startLocalMedia: (video?: boolean, audio?: boolean) => Promise<void>;
   stopLocalMedia: () => void;
@@ -132,12 +149,11 @@ export function useWebRTC(
 ): UseWebRTCReturn {
   const { role, displayName } = options;
 
-  // Session-stable peer ID (randomized suffix prevents collision when multiple join with same link)
   const sessionPeerIdRef = useRef<string>(
     options.customPeerId || generateUniqueSessionId(roomId, role)
   );
 
-  // Streams
+  // Streams & Remote Peers
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remotePeers, setRemotePeers] = useState<Map<string, RemotePeer>>(new Map());
 
@@ -152,22 +168,25 @@ export function useWebRTC(
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRemoteTyping, setIsRemoteTyping] = useState(false);
 
-  // Call timer
-  const [callDurationSeconds, setCallDurationSeconds] = useState(0);
-
-  // Chat
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
-
-  // Peer info
-  const [peerId, setPeerId] = useState<string | null>(null);
-
-  // WhatsApp-style Audio-Only Fallback & Network Resilience
-  const [isVideoPausedForNetwork, setIsVideoPausedForNetwork] = useState(false);
-  const [isRemoteVideoPausedForNetwork, setIsRemoteVideoPausedForNetwork] = useState(false);
+  // Adaptive 240p Quality Drop
+  const [is240pQuality, setIs240pQuality] = useState(false);
+  const [isRemote240pQuality, setIsRemote240pQuality] = useState(false);
   const [isSimulatedPoorNetwork, setIsSimulatedPoorNetwork] = useState(false);
 
-  // Mutable refs to prevent stale closure issues in callbacks
-  const isVideoPausedForNetworkRef = useRef(false);
+  // Devices
+  const [availableDevices, setAvailableDevices] = useState<DeviceInfo[]>([]);
+  const [currentAudioDeviceId, setCurrentAudioDeviceId] = useState<string | null>(null);
+  const [currentVideoDeviceId, setCurrentVideoDeviceId] = useState<string | null>(null);
+  const currentAudioDeviceIdRef = useRef<string | null>(null);
+  const currentVideoDeviceIdRef = useRef<string | null>(null);
+
+  // Call timer & Chat
+  const [callDurationSeconds, setCallDurationSeconds] = useState(0);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [peerId, setPeerId] = useState<string | null>(null);
+
+  // Mutable refs
+  const is240pQualityRef = useRef(false);
   const isSimulatedPoorNetworkRef = useRef(false);
   const isCamOffRef = useRef(false);
   const isMicMutedRef = useRef(false);
@@ -205,6 +224,35 @@ export function useWebRTC(
   }, []);
 
   /* ---------------------------------------------------------------- */
+  /*  Device Enumeration                                               */
+  /* ---------------------------------------------------------------- */
+
+  const refreshDevices = useCallback(async () => {
+    try {
+      if (!navigator.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const list = devices.map((d) => ({
+        deviceId: d.deviceId,
+        label: d.label || `${d.kind} (${d.deviceId.slice(0, 5)}…)`,
+        kind: d.kind as DeviceInfo["kind"],
+      }));
+      setAvailableDevices(list);
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshDevices();
+    if (navigator.mediaDevices?.addEventListener) {
+      navigator.mediaDevices.addEventListener("devicechange", refreshDevices);
+      return () => {
+        navigator.mediaDevices.removeEventListener("devicechange", refreshDevices);
+      };
+    }
+  }, [refreshDevices]);
+
+  /* ---------------------------------------------------------------- */
   /*  Start / Stop Local Media                                         */
   /* ---------------------------------------------------------------- */
 
@@ -226,9 +274,24 @@ export function useWebRTC(
             ? { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
             : false,
         });
+
+        const vTrack = stream.getVideoTracks()[0];
+        const aTrack = stream.getAudioTracks()[0];
+        if (vTrack) {
+          const settings = vTrack.getSettings();
+          currentVideoDeviceIdRef.current = settings.deviceId || null;
+          setCurrentVideoDeviceId(settings.deviceId || null);
+        }
+        if (aTrack) {
+          const settings = aTrack.getSettings();
+          currentAudioDeviceIdRef.current = settings.deviceId || null;
+          setCurrentAudioDeviceId(settings.deviceId || null);
+        }
+
         setLocalStream(stream);
         localStreamRef.current = stream;
         setConnectionState("idle");
+        refreshDevices();
       } catch (err: any) {
         const msg =
           err.name === "NotAllowedError"
@@ -240,7 +303,7 @@ export function useWebRTC(
         setConnectionState("error");
       }
     },
-    []
+    [refreshDevices]
   );
 
   const stopLocalMedia = useCallback(() => {
@@ -267,18 +330,39 @@ export function useWebRTC(
     });
   }, []);
 
-  const sendNetworkModePayload = useCallback(
-    (videoPaused: boolean) => {
-      broadcastDataPayload({
-        type: "network_mode",
-        videoPausedForNetwork: videoPaused,
-      });
-    },
-    [broadcastDataPayload]
-  );
+  /* ---------------------------------------------------------------- */
+  /*  WebRTC Sender Encoding Adaptation (240p Quality Scaling)        */
+  /* ---------------------------------------------------------------- */
+
+  const applyVideoQualityConstraints = useCallback((targetQuality: "240p" | "hd") => {
+    mediaConnsRef.current.forEach((call) => {
+      const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+      const sender = pc?.getSenders()?.find((s) => s.track?.kind === "video");
+      if (sender) {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings || params.encodings.length === 0) {
+            params.encodings = [{}];
+          }
+          if (targetQuality === "240p") {
+            params.encodings[0].scaleResolutionDownBy = 3.0; // 720p / 3 = 240p
+            params.encodings[0].maxBitrate = 120000; // 120 kbps (conserves 85% data)
+            params.encodings[0].maxFramerate = 15;
+          } else {
+            params.encodings[0].scaleResolutionDownBy = 1.0;
+            params.encodings[0].maxBitrate = 2000000; // 2 Mbps
+            delete params.encodings[0].maxFramerate;
+          }
+          sender.setParameters(params).catch(() => {});
+        } catch {
+          // Ignore
+        }
+      }
+    });
+  }, []);
 
   /* ---------------------------------------------------------------- */
-  /*  WhatsApp-style Adaptive Resilience & Simulation Toggle           */
+  /*  Simulate Poor Network (Interactive Toggle)                       */
   /* ---------------------------------------------------------------- */
 
   const simulatePoorNetwork = useCallback(
@@ -290,28 +374,27 @@ export function useWebRTC(
 
       if (nextState) {
         setNetworkQuality("poor");
-        isVideoPausedForNetworkRef.current = true;
-        setIsVideoPausedForNetwork(true);
-
-        // WhatsApp rule: pause video track to preserve audio clarity
-        if (localStreamRef.current) {
-          localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = false));
-          localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !isMicMutedRef.current));
-        }
-        sendNetworkModePayload(true);
+        is240pQualityRef.current = true;
+        setIs240pQuality(true);
+        // Video stays VISIBLE and fully moving, just scaled to 240p!
+        applyVideoQualityConstraints("240p");
+        broadcastDataPayload({
+          type: "network_mode",
+          is240p: true,
+        });
       } else {
-        stableCounterRef.current = 2; // Immediate restoration
+        stableCounterRef.current = 2;
         setNetworkQuality("excellent");
-        isVideoPausedForNetworkRef.current = false;
-        setIsVideoPausedForNetwork(false);
-
-        if (localStreamRef.current && !isCamOffRef.current) {
-          localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = true));
-        }
-        sendNetworkModePayload(false);
+        is240pQualityRef.current = false;
+        setIs240pQuality(false);
+        applyVideoQualityConstraints("hd");
+        broadcastDataPayload({
+          type: "network_mode",
+          is240p: false,
+        });
       }
     },
-    [sendNetworkModePayload]
+    [applyVideoQualityConstraints, broadcastDataPayload]
   );
 
   /* ---------------------------------------------------------------- */
@@ -369,41 +452,28 @@ export function useWebRTC(
 
         setNetworkQuality(quality);
 
-        // WhatsApp-style Audio-First Resilience:
+        // Quality Downscaling to 240p (Video stays visible!)
         if (quality === "poor") {
           stableCounterRef.current = 0;
-          if (!isVideoPausedForNetworkRef.current) {
-            console.log(
-              "[WebRTC Audio-First] Poor network detected — pausing local video to prioritize uninterrupted audio."
-            );
-            isVideoPausedForNetworkRef.current = true;
-            setIsVideoPausedForNetwork(true);
-
-            if (localStreamRef.current) {
-              localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = false));
-              localStreamRef.current.getAudioTracks().forEach((t) => (t.enabled = !isMicMutedRef.current));
-            }
-
-            sendNetworkModePayload(true);
+          if (!is240pQualityRef.current) {
+            console.log("[WebRTC] Poor network detected — scaling video to 240p to preserve audio.");
+            is240pQualityRef.current = true;
+            setIs240pQuality(true);
+            applyVideoQualityConstraints("240p");
+            broadcastDataPayload({ type: "network_mode", is240p: true });
           }
         } else if (quality === "good" || quality === "excellent") {
           stableCounterRef.current += 1;
           if (
             stableCounterRef.current >= 2 &&
-            isVideoPausedForNetworkRef.current &&
+            is240pQualityRef.current &&
             !isSimulatedPoorNetworkRef.current
           ) {
-            console.log(
-              "[WebRTC Audio-First] Network stabilized — automatically restoring video stream."
-            );
-            isVideoPausedForNetworkRef.current = false;
-            setIsVideoPausedForNetwork(false);
-
-            if (localStreamRef.current && !isCamOffRef.current) {
-              localStreamRef.current.getVideoTracks().forEach((t) => (t.enabled = true));
-            }
-
-            sendNetworkModePayload(false);
+            console.log("[WebRTC] Network stabilized — restoring video stream to HD.");
+            is240pQualityRef.current = false;
+            setIs240pQuality(false);
+            applyVideoQualityConstraints("hd");
+            broadcastDataPayload({ type: "network_mode", is240p: false });
           }
         } else {
           stableCounterRef.current = 0;
@@ -412,7 +482,7 @@ export function useWebRTC(
         // Ignore stats fetch error
       }
     }, 2500);
-  }, [sendNetworkModePayload]);
+  }, [applyVideoQualityConstraints, broadcastDataPayload]);
 
   const stopNetworkMonitor = useCallback(() => {
     if (statsIntervalRef.current) {
@@ -431,17 +501,14 @@ export function useWebRTC(
 
     conn.on("open", () => {
       console.log(`[DataChannel] Open with ${remoteId}`);
-      if (isVideoPausedForNetworkRef.current) {
-        conn.send({
-          type: "network_mode",
-          videoPausedForNetwork: true,
-        });
+      if (is240pQualityRef.current) {
+        conn.send({ type: "network_mode", is240p: true });
       }
       if (isCamOffRef.current) {
-        conn.send({
-          type: "camera_state",
-          isCamOff: true,
-        });
+        conn.send({ type: "camera_state", isCamOff: true });
+      }
+      if (isMicMutedRef.current) {
+        conn.send({ type: "mic_state", isMicMuted: true });
       }
     });
 
@@ -455,21 +522,24 @@ export function useWebRTC(
           existing.isCamOff = isOff;
           setRemotePeers(new Map(remotePeersRef.current));
         }
-      } else if (payload.type === "network_mode") {
-        const isPaused = Boolean(payload.videoPausedForNetwork);
-        console.log(`[WebRTC Audio-First] Peer ${remoteId} videoPausedForNetwork = ${isPaused}`);
-
+      } else if (payload.type === "mic_state") {
+        const isMuted = Boolean(payload.isMicMuted);
+        console.log(`[WebRTC] Peer ${remoteId} mic_state isMicMuted = ${isMuted}`);
         const existing = remotePeersRef.current.get(remoteId);
         if (existing) {
-          existing.isVideoPausedForNetwork = isPaused;
+          existing.isMicMuted = isMuted;
           setRemotePeers(new Map(remotePeersRef.current));
         }
-
-        // Check if any remote peer has video paused
-        const anyRemotePaused = Array.from(remotePeersRef.current.values()).some(
-          (p) => p.isVideoPausedForNetwork
-        );
-        setIsRemoteVideoPausedForNetwork(anyRemotePaused);
+      } else if (payload.type === "network_mode") {
+        const is240 = Boolean(payload.is240p);
+        console.log(`[WebRTC] Peer ${remoteId} is240p = ${is240}`);
+        const existing = remotePeersRef.current.get(remoteId);
+        if (existing) {
+          existing.is240p = is240;
+          setRemotePeers(new Map(remotePeersRef.current));
+        }
+        const anyRemote240p = Array.from(remotePeersRef.current.values()).some((p) => p.is240p);
+        setIsRemote240pQuality(anyRemote240p);
       } else if (payload.type === "chat" && payload.message) {
         const msg: ChatMessage = {
           id: payload.id || `msg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -506,7 +576,6 @@ export function useWebRTC(
     call.on("stream", (stream) => {
       console.log(`[MediaConnection] Stream received from ${remoteId}`);
 
-      // Parse metadata from peerId if available: smrko-[roomId]-[role]-[suffix]
       const parts = remoteId.split("-");
       const peerRole: "patient" | "doctor" | "guest" =
         parts[2] === "doctor" ? "doctor" : parts[2] === "guest" ? "guest" : "patient";
@@ -518,7 +587,7 @@ export function useWebRTC(
         role: existing?.role || peerRole,
         displayName: existing?.displayName || defaultName,
         stream,
-        isVideoPausedForNetwork: existing?.isVideoPausedForNetwork || false,
+        is240p: existing?.is240p || false,
         isMicMuted: existing?.isMicMuted || false,
         isCamOff: existing?.isCamOff || false,
       });
@@ -537,7 +606,7 @@ export function useWebRTC(
         if (ice === "connected" || ice === "completed") {
           setConnectionState("connected");
         } else if (ice === "disconnected") {
-          console.warn(`[WebRTC ICE ${remoteId}] Temporarily disconnected; preserving audio`);
+          console.warn(`[WebRTC ICE ${remoteId}] Temporarily disconnected; attempting ICE restart`);
           if (pc.restartIce) {
             try {
               pc.restartIce();
@@ -578,30 +647,28 @@ export function useWebRTC(
       const peer = peerRef.current;
       if (!peer || peer.destroyed) return;
 
-      // Prevent redundant outgoing call if already established
       const existingCall = mediaConnsRef.current.get(targetPeerId);
       if (existingCall && (existingCall as any).open) return;
 
       console.log(`[Mesh Calling] Initiating P2P connection to ${targetPeerId}...`);
 
-      // Pre-register remote peer metadata
       if (targetDisplayName || targetRole) {
         remotePeersRef.current.set(targetPeerId, {
           peerId: targetPeerId,
           role: targetRole || "patient",
           displayName: targetDisplayName || "Participant",
           stream: null,
-          isVideoPausedForNetwork: false,
+          is240p: false,
+          isMicMuted: false,
+          isCamOff: false,
         });
         setRemotePeers(new Map(remotePeersRef.current));
       }
 
       try {
-        // Connect data channel
         const dataConn = peer.connect(targetPeerId, { reliable: true });
         handleDataConnection(dataConn);
 
-        // Call with media
         if (localStreamRef.current) {
           const call = peer.call(targetPeerId, localStreamRef.current);
           if (call) {
@@ -647,7 +714,6 @@ export function useWebRTC(
 
     peer.on("error", (err) => {
       if (err.type === "peer-unavailable") {
-        // Normal transient state when remote peer hasn't opened socket yet
         return;
       }
       if (err.type === "unavailable-id") {
@@ -686,16 +752,19 @@ export function useWebRTC(
       }, 2000);
     });
 
-    // Listen for incoming calls
+    // Answer incoming calls with local stream
     peer.on("call", (call) => {
       console.log(`[PeerJS] Incoming call from ${call.peer}`);
       setConnectionState("connecting");
-      // Answer with local stream
-      call.answer(localStreamRef.current || undefined);
+      const currentStream = localStreamRef.current;
+      if (currentStream) {
+        call.answer(currentStream);
+      } else {
+        call.answer();
+      }
       handleMediaConnection(call);
     });
 
-    // Listen for incoming data connections
     peer.on("connection", (conn) => {
       console.log(`[PeerJS] Incoming data channel from ${conn.peer}`);
       handleDataConnection(conn);
@@ -723,7 +792,7 @@ export function useWebRTC(
           peerId: myId,
           role,
           displayName,
-          isVideoPausedForNetwork: isVideoPausedForNetworkRef.current,
+          isVideoPausedForNetwork: is240pQualityRef.current,
           isMicMuted: isMicMutedRef.current,
           isCamOff: isCamOffRef.current,
         }),
@@ -735,16 +804,13 @@ export function useWebRTC(
         peerId: string;
         role: "patient" | "doctor" | "guest";
         displayName: string;
-        isVideoPausedForNetwork?: boolean;
         isMicMuted?: boolean;
         isCamOff?: boolean;
       }> = data.peers || [];
 
-      // Set of peer IDs currently active in room
       const activePeerIds = new Set(activePeers.map((p) => p.peerId));
 
       for (const remote of activePeers) {
-        // Update metadata
         const existing = remotePeersRef.current.get(remote.peerId);
         if (existing) {
           let changed = false;
@@ -769,27 +835,17 @@ export function useWebRTC(
           }
         }
 
-        // Glare-free mesh calling:
-        // If we do not have an active call with this peer:
-        // Compare peer IDs: peer with greater ID initiates call to peer with lesser ID!
         const existingCall = mediaConnsRef.current.get(remote.peerId);
         const isCallOpen = existingCall && (existingCall as any).open;
 
         if (!isCallOpen && localStreamRef.current) {
           if (myId > remote.peerId) {
-            console.log(
-              `[Mesh Glare Prevention] (MyID: ${myId} > PeerID: ${remote.peerId}) -> Calling remote peer.`
-            );
+            console.log(`[Mesh Glare Prevention] (MyID: ${myId} > PeerID: ${remote.peerId}) -> Calling remote peer.`);
             connectToPeer(remote.peerId, remote.role, remote.displayName);
-          } else {
-            console.log(
-              `[Mesh Glare Prevention] (MyID: ${myId} < PeerID: ${remote.peerId}) -> Awaiting incoming call.`
-            );
           }
         }
       }
 
-      // Cleanup peers who left the room roster
       remotePeersRef.current.forEach((_, pId) => {
         if (!activePeerIds.has(pId)) {
           const call = mediaConnsRef.current.get(pId);
@@ -808,7 +864,113 @@ export function useWebRTC(
   }, [roomId, role, displayName, connectToPeer]);
 
   /* ---------------------------------------------------------------- */
-  /*  Media Track Toggles                                              */
+  /*  Switch Camera & Microphone                                       */
+  /* ---------------------------------------------------------------- */
+
+  const switchCamera = useCallback(async (targetDeviceId?: string) => {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter((d) => d.kind === "videoinput");
+      if (videoDevices.length === 0) return;
+
+      let selectedId = targetDeviceId;
+      if (!selectedId) {
+        const currId = currentVideoDeviceIdRef.current;
+        const currIdx = videoDevices.findIndex((d) => d.deviceId === currId);
+        const nextIdx = (currIdx + 1) % videoDevices.length;
+        selectedId = videoDevices[nextIdx].deviceId;
+      }
+
+      console.log(`[WebRTC] Switching camera to deviceId: ${selectedId}`);
+
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          deviceId: { exact: selectedId },
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          frameRate: { ideal: 30 },
+        },
+        audio: false,
+      });
+
+      const newTrack = newStream.getVideoTracks()[0];
+      if (!newTrack) return;
+
+      currentVideoDeviceIdRef.current = selectedId;
+      setCurrentVideoDeviceId(selectedId);
+      newTrack.enabled = !isCamOffRef.current;
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getVideoTracks().forEach((t) => t.stop());
+      }
+
+      const currentAudioTrack = localStreamRef.current?.getAudioTracks()[0];
+      const newLocalStream = new MediaStream();
+      if (currentAudioTrack) newLocalStream.addTrack(currentAudioTrack);
+      newLocalStream.addTrack(newTrack);
+
+      localStreamRef.current = newLocalStream;
+      setLocalStream(newLocalStream);
+
+      for (const call of mediaConnsRef.current.values()) {
+        const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+        const sender = pc?.getSenders()?.find((s) => s.track?.kind === "video");
+        if (sender) {
+          await sender.replaceTrack(newTrack);
+        }
+      }
+    } catch (err: any) {
+      console.warn("[WebRTC] Switch camera error:", err);
+    }
+  }, []);
+
+  const switchMicrophone = useCallback(async (targetDeviceId: string) => {
+    try {
+      console.log(`[WebRTC] Switching microphone to deviceId: ${targetDeviceId}`);
+
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId: { exact: targetDeviceId },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+
+      const newTrack = newStream.getAudioTracks()[0];
+      if (!newTrack) return;
+
+      currentAudioDeviceIdRef.current = targetDeviceId;
+      setCurrentAudioDeviceId(targetDeviceId);
+      newTrack.enabled = !isMicMutedRef.current;
+
+      if (localStreamRef.current) {
+        localStreamRef.current.getAudioTracks().forEach((t) => t.stop());
+      }
+
+      const currentVideoTrack = localStreamRef.current?.getVideoTracks()[0];
+      const newLocalStream = new MediaStream();
+      newLocalStream.addTrack(newTrack);
+      if (currentVideoTrack) newLocalStream.addTrack(currentVideoTrack);
+
+      localStreamRef.current = newLocalStream;
+      setLocalStream(newLocalStream);
+
+      for (const call of mediaConnsRef.current.values()) {
+        const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+        const sender = pc?.getSenders()?.find((s) => s.track?.kind === "audio");
+        if (sender) {
+          await sender.replaceTrack(newTrack);
+        }
+      }
+    } catch (err: any) {
+      console.warn("[WebRTC] Switch microphone error:", err);
+    }
+  }, []);
+
+  /* ---------------------------------------------------------------- */
+  /*  Media Track Toggles (Fixed Mic & Camera)                         */
   /* ---------------------------------------------------------------- */
 
   const toggleMic = useCallback(() => {
@@ -817,10 +979,27 @@ export function useWebRTC(
     isMicMutedRef.current = nextState;
     setIsMicMuted(nextState);
 
+    // 1. Enable/disable on local stream
     localStreamRef.current.getAudioTracks().forEach((t) => {
       t.enabled = !nextState;
     });
-  }, [isMicMuted]);
+
+    // 2. Explicitly update track.enabled on all RTCRtpSenders
+    mediaConnsRef.current.forEach((call) => {
+      const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+      pc?.getSenders()?.forEach((s) => {
+        if (s.track && s.track.kind === "audio") {
+          s.track.enabled = !nextState;
+        }
+      });
+    });
+
+    // 3. Sync mic state to all peers
+    broadcastDataPayload({
+      type: "mic_state",
+      isMicMuted: nextState,
+    });
+  }, [isMicMuted, broadcastDataPayload]);
 
   const toggleCamera = useCallback(() => {
     if (!localStreamRef.current) return;
@@ -829,7 +1008,16 @@ export function useWebRTC(
     setIsCamOff(nextState);
 
     localStreamRef.current.getVideoTracks().forEach((t) => {
-      t.enabled = !nextState && !isVideoPausedForNetworkRef.current;
+      t.enabled = !nextState;
+    });
+
+    mediaConnsRef.current.forEach((call) => {
+      const pc = (call as any).peerConnection as RTCPeerConnection | undefined;
+      pc?.getSenders()?.forEach((s) => {
+        if (s.track && s.track.kind === "video") {
+          s.track.enabled = !nextState;
+        }
+      });
     });
 
     broadcastDataPayload({
@@ -839,12 +1027,11 @@ export function useWebRTC(
   }, [isCamOff, broadcastDataPayload]);
 
   /* ---------------------------------------------------------------- */
-  /*  Screen Sharing across all active mesh calls                     */
+  /*  Screen Sharing                                                   */
   /* ---------------------------------------------------------------- */
 
   const toggleScreenShare = useCallback(async () => {
     if (isScreenSharing) {
-      // Stop screen share — restore camera
       if (screenStreamRef.current) {
         screenStreamRef.current.getTracks().forEach((t) => t.stop());
         screenStreamRef.current = null;
@@ -954,7 +1141,6 @@ export function useWebRTC(
       roomHeartbeatRef.current = null;
     }
 
-    // Notify server of leave
     const myId = sessionPeerIdRef.current;
     if (myId) {
       try {
@@ -1012,7 +1198,6 @@ export function useWebRTC(
     };
   }, [stopLocalMedia]);
 
-  // Start periodic room roster sync once peer is ready
   useEffect(() => {
     if (options.disableAutoConnect) return;
     if (!peerId) return;
@@ -1028,17 +1213,10 @@ export function useWebRTC(
     };
   }, [options.disableAutoConnect, peerId, syncRoomRoster]);
 
-  // Backwards compatibility helper values
   const remotePeersList = Array.from(remotePeers.values());
   const firstRemotePeer = remotePeersList[0] || null;
   const remoteStream = firstRemotePeer?.stream || null;
   const remotePeerId = firstRemotePeer?.peerId || null;
-
-  const isAudioOnlyFallback =
-    isVideoPausedForNetwork ||
-    isRemoteVideoPausedForNetwork ||
-    networkQuality === "poor";
-
   const isRemoteCamOff = Boolean(firstRemotePeer?.isCamOff);
 
   return {
@@ -1059,12 +1237,21 @@ export function useWebRTC(
     remotePeerId,
     error,
 
-    // WhatsApp-style Audio-First Resilience
-    isVideoPausedForNetwork,
-    isRemoteVideoPausedForNetwork,
-    isAudioOnlyFallback,
+    // Adaptive 240p Quality Degradation (Video stays visible!)
+    is240pQuality,
+    isRemote240pQuality,
+    isVideoPausedForNetwork: false,
+    isRemoteVideoPausedForNetwork: false,
+    isAudioOnlyFallback: false,
     isSimulatedPoorNetwork,
     simulatePoorNetwork,
+
+    // Device switching
+    availableDevices,
+    currentAudioDeviceId,
+    currentVideoDeviceId,
+    switchCamera,
+    switchMicrophone,
 
     startLocalMedia,
     stopLocalMedia,

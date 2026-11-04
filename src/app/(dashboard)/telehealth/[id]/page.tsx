@@ -24,7 +24,9 @@ import {
   MessageSquare,
   X,
   ArrowRight,
+  SlidersHorizontal,
 } from "lucide-react";
+import { DeviceSettingsModal } from "@/components/telehealth/device-settings-modal";
 import { usePatient } from "@/context/patient-context";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
@@ -64,6 +66,7 @@ function TelehealthRoomContent({ id }: { id: string }) {
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [isDeviceSettingsOpen, setIsDeviceSettingsOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [latestDoctorMessage, setLatestDoctorMessage] = useState<ChatMessage | null>(null);
   const prevMessagesCountRef = useRef(0);
@@ -185,7 +188,7 @@ function TelehealthRoomContent({ id }: { id: string }) {
 
   // Handle camera switch
   const handleSwitchCamera = async () => {
-    toast.info("Camera view switched");
+    await rtc.switchCamera();
   };
 
   // -----------------------------------------------------------------
@@ -280,6 +283,14 @@ function TelehealthRoomContent({ id }: { id: string }) {
                 ) : (
                   <Mic className="w-4 h-4" />
                 )}
+              </button>
+              <button
+                onClick={() => setIsDeviceSettingsOpen(true)}
+                className="p-2.5 rounded-full backdrop-blur-md transition-colors cursor-pointer bg-black/50 text-white hover:bg-black/80"
+                aria-label="Device Settings"
+                title="Microphone and Camera Settings"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
               </button>
               <button
                 onClick={rtc.toggleCamera}
@@ -473,6 +484,7 @@ function TelehealthRoomContent({ id }: { id: string }) {
             remotePeers={rtc.remotePeers}
             isLocalCamOff={rtc.isCamOff}
             isLocalMicMuted={rtc.isMicMuted}
+            is240pQuality={rtc.is240pQuality}
             isVideoPausedForNetwork={rtc.isVideoPausedForNetwork}
             selfName={patient.name}
             selfRole="patient"
@@ -486,6 +498,7 @@ function TelehealthRoomContent({ id }: { id: string }) {
             label={`${doctorName} (Doctor)`}
             objectFit="cover"
             isCamOff={rtc.isRemoteCamOff}
+            is240pQuality={rtc.isRemote240pQuality}
             isAudioOnlyFallback={rtc.isAudioOnlyFallback}
             fallbackName={doctorName}
             fallbackAvatar={doctorAvatar}
@@ -655,6 +668,7 @@ function TelehealthRoomContent({ id }: { id: string }) {
               className="w-full h-full"
               label="You"
               objectFit="cover"
+              is240pQuality={rtc.is240pQuality}
             />
           )}
 
@@ -730,6 +744,7 @@ function TelehealthRoomContent({ id }: { id: string }) {
             }
           }}
           onSwitchCamera={handleSwitchCamera}
+          onOpenDeviceSettings={() => setIsDeviceSettingsOpen(true)}
           onEndCall={() => setShowEndConfirm(true)}
         />
       </div>
@@ -771,6 +786,16 @@ function TelehealthRoomContent({ id }: { id: string }) {
         roomId={id}
         doctorName={doctorName}
         patientName={patient.name}
+      />
+      {/* 10. Device Settings Modal */}
+      <DeviceSettingsModal
+        isOpen={isDeviceSettingsOpen}
+        onClose={() => setIsDeviceSettingsOpen(false)}
+        availableDevices={rtc.availableDevices}
+        currentAudioDeviceId={rtc.currentAudioDeviceId}
+        currentVideoDeviceId={rtc.currentVideoDeviceId}
+        onSelectMicrophone={rtc.switchMicrophone}
+        onSelectCamera={rtc.switchCamera}
       />
     </div>
   );

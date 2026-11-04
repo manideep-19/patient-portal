@@ -11,6 +11,7 @@ import {
   MonitorUp,
   MonitorOff,
   MessageSquare,
+  SlidersHorizontal,
 } from "lucide-react";
 
 interface CallControlsProps {
@@ -24,6 +25,7 @@ interface CallControlsProps {
   onToggleScreenShare: () => void;
   onToggleChat: () => void;
   onSwitchCamera: () => void;
+  onOpenDeviceSettings?: () => void;
   onEndCall: () => void;
 }
 
@@ -38,6 +40,7 @@ export function CallControls({
   onToggleScreenShare,
   onToggleChat,
   onSwitchCamera,
+  onOpenDeviceSettings,
   onEndCall,
 }: CallControlsProps) {
   return (
@@ -91,14 +94,25 @@ export function CallControls({
           activeClass="bg-amber-400 text-ink shadow-soft"
         />
 
-        {/* Switch Camera */}
+        {/* Switch Camera (Front <-> Rear) */}
         <ControlButton
           active={false}
           icon={<SwitchCamera className="w-5 h-5 text-white/90" />}
           label="Switch Camera"
-          title="Switch Camera (Front/Rear)"
+          title="Switch Camera (Front/Rear/Next Device)"
           onClick={onSwitchCamera}
         />
+
+        {/* Audio & Video Settings (Device Selector) */}
+        {onOpenDeviceSettings && (
+          <ControlButton
+            active={false}
+            icon={<SlidersHorizontal className="w-5 h-5 text-white/90" />}
+            label="Audio & Video Settings"
+            title="Audio & Video Settings (Select Mic or Camera)"
+            onClick={onOpenDeviceSettings}
+          />
+        )}
 
         {/* Chat Toggle */}
         <div className="relative">
@@ -149,20 +163,20 @@ function ControlButton({
   active: boolean;
   icon: React.ReactNode;
   label: string;
-  title?: string;
+  title: string;
   onClick: () => void;
   activeClass?: string;
 }) {
   return (
     <button
       onClick={onClick}
-      title={title || label}
-      className={`w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer ${
+      className={`relative w-11 h-11 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer active:scale-95 ${
         active
           ? activeClass
-          : "bg-white/15 text-white hover:bg-white/25 active:scale-95 border border-white/10"
+          : "bg-white/10 hover:bg-white/20 text-white/90 hover:text-white"
       }`}
       aria-label={label}
+      title={title}
     >
       {icon}
     </button>

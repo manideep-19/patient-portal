@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState } from "react";
-import { Mic, WifiOff, VideoOff } from "lucide-react";
+import { Mic, VideoOff, Volume2, Wifi } from "lucide-react";
 
 interface VideoPlayerProps {
   stream: MediaStream | null;
@@ -14,7 +14,9 @@ interface VideoPlayerProps {
   onClick?: () => void;
   // Manual camera off state (Google Meet / WhatsApp letter avatar)
   isCamOff?: boolean;
-  // WhatsApp-style Audio-Only fallback props:
+  // Adaptive 240p quality drop
+  is240pQuality?: boolean;
+  // Backwards compatibility props
   isAudioOnlyFallback?: boolean;
   fallbackName?: string;
   fallbackAvatar?: string;
@@ -23,7 +25,6 @@ interface VideoPlayerProps {
 
 function getInitial(name: string): string {
   if (!name) return "?";
-  // Remove common medical or salutation prefixes so initial reflects actual name
   const clean = name.replace(/^(Dr\.|Dr|Mr\.|Mr|Mrs\.|Mrs|Ms\.|Ms)\s+/i, "").trim();
   return (clean[0] || name[0] || "?").toUpperCase();
 }
@@ -55,45 +56,13 @@ export function VideoPlayer({
   objectFit = "cover",
   onClick,
   isCamOff = false,
-  isAudioOnlyFallback = false,
+  is240pQuality = false,
   fallbackName,
   fallbackAvatar,
   fallbackRole,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [isTrackMuted, setIsTrackMuted] = useState(false);
-
-  // Monitor underlying WebRTC track mute state
-  useEffect(() => {
-    if (!stream) {
-      setIsTrackMuted(false);
-      return;
-    }
-
-    const videoTrack = stream.getVideoTracks()[0];
-    if (!videoTrack) {
-      setIsTrackMuted(true);
-      return;
-    }
-
-    const handleMute = () => setIsTrackMuted(true);
-    const handleUnmute = () => setIsTrackMuted(false);
-
-    videoTrack.addEventListener("mute", handleMute);
-    videoTrack.addEventListener("unmute", handleUnmute);
-
-    // Initial state check
-    if (videoTrack.muted || !videoTrack.enabled) {
-      setIsTrackMuted(true);
-    } else {
-      setIsTrackMuted(false);
-    }
-
-    return () => {
-      videoTrack.removeEventListener("mute", handleMute);
-      videoTrack.removeEventListener("unmute", handleUnmute);
-    };
-  }, [stream]);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -103,16 +72,38 @@ export function VideoPlayer({
       video.srcObject = stream;
     }
 
+    // Set muted property directly on DOM element
+    video.muted = muted;
+
     const safePlay = () => {
       const playPromise = video.play();
       if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.log("[VideoPlayer] Autoplay notice:", err.message);
-        });
+        playPromise
+          .then(() => {
+            setAutoplayBlocked(false);
+          })
+          .catch((err) => {
+            console.log("[VideoPlayer] Autoplay blocked by browser:", err.message);
+            if (!muted) {
+              setAutoplayBlocked(true);
+            }
+          });
       }
     };
 
     safePlay();
+
+    // Auto-resume audio when remote audio track un-mutes
+    const audioTrack = stream.getAudioTracks()[0];
+    if (audioTrack) {
+      const handleAudioUnmute = () => {
+        safePlay();
+      };
+      audioTrack.addEventListener("unmute", handleAudioUnmute);
+      return () => {
+        audioTrack.removeEventListener("unmute", handleAudioUnmute);
+      };
+    }
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === "visible") {
@@ -125,12 +116,22 @@ export function VideoPlayer({
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [stream]);
+  }, [stream, muted]);
+
+  const handleUnblockAudio = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (videoRef.current) {
+      videoRef.current.muted = false;
+      videoRef.current
+        .play()
+        .then(() => setAutoplayBlocked(false))
+        .catch(() => {});
+    }
+  };
 
   const displayName = fallbackName || label || "Participant";
   const initial = getInitial(displayName);
-  const isCameraOff = Boolean(isCamOff || isTrackMuted);
-  const isVideoHidden = isAudioOnlyFallback || isCameraOff;
+  const isCameraOff = Boolean(isCamOff);
 
   if (!stream) {
     return (
@@ -163,7 +164,7 @@ export function VideoPlayer({
     <div className={`relative overflow-hidden ${className}`} onClick={onClick}>
       {/* 
         CRITICAL: The HTML5 <video> element remains MOUNTED and PLAYING at all times!
-        This guarantees remote audio is NEVER cut off even when video is turned off or paused.
+        This guarantees remote audio is NEVER cut off even when camera is off.
       */}
       <video
         ref={videoRef}
@@ -173,18 +174,16 @@ export function VideoPlayer({
         className={`w-full h-full ${objectFit === "cover" ? "object-cover" : "object-contain"} ${
           mirror ? "scale-x-[-1]" : ""
         } ${
-          isVideoHidden
+          isCameraOff
             ? "opacity-0 pointer-events-none"
             : "opacity-100 transition-opacity duration-300"
         }`}
       />
 
-      {/* 1. Google Meet / WhatsApp Style Letter Avatar Screen (When Camera is Manually Off) */}
-      {isCameraOff && !isAudioOnlyFallback && (
+      {/* 1. Google Meet / WhatsApp Style Letter Avatar Screen (Only when camera is manually off) */}
+      {isCameraOff && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 p-6 text-center select-none animate-in fade-in duration-300">
-          {/* Centered Large Circular Letter Tile */}
           <div className="relative mb-4 flex items-center justify-center">
-            {/* Subtle animated ambient ring */}
             <span className="absolute w-28 h-28 sm:w-36 sm:h-36 rounded-full border border-white/10 animate-pulse pointer-events-none" />
 
             <div
@@ -198,12 +197,10 @@ export function VideoPlayer({
             </div>
           </div>
 
-          {/* Participant Name */}
           <h3 className="text-base sm:text-xl font-bold text-white tracking-tight">
             {displayName}
           </h3>
 
-          {/* Camera is Off Status Pill */}
           <div className="mt-2.5 flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-800/90 border border-slate-700/80 text-white/70 text-xs shadow-md">
             <VideoOff className="w-3.5 h-3.5 text-slate-400" />
             <span className="font-medium">Camera is off</span>
@@ -211,54 +208,28 @@ export function VideoPlayer({
         </div>
       )}
 
-      {/* 2. WhatsApp-Style Low-Bandwidth Audio-Only Overlay (When Network Degrades) */}
-      {isAudioOnlyFallback && (
-        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gradient-to-b from-slate-950 via-slate-900 to-black p-6 text-center select-none animate-in fade-in duration-300">
-          {/* Top Pill */}
-          <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs shadow-xl backdrop-blur-md">
-            <WifiOff className="w-3.5 h-3.5 text-amber-400" />
-            <span className="font-semibold tracking-wide">Poor Connection • Video Paused</span>
-          </div>
-
-          {/* Center Avatar with Pulsing Emerald Audio Waves */}
-          <div className="relative mb-5 flex items-center justify-center">
-            <span className="absolute w-36 h-36 rounded-full border border-emerald-500/30 animate-ping duration-1000 pointer-events-none" />
-            <span className="absolute w-44 h-44 rounded-full border border-emerald-500/20 animate-pulse pointer-events-none" />
-
-            <div className="relative w-24 h-24 sm:w-28 sm:h-28 rounded-full bg-slate-800 ring-4 ring-emerald-500/60 shadow-2xl overflow-hidden flex items-center justify-center">
-              {fallbackAvatar ? (
-                <img
-                  src={fallbackAvatar}
-                  alt={displayName}
-                  className="w-full h-full object-cover"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center bg-brand text-white text-3xl font-bold font-sans">
-                  {initial}
-                </div>
-              )}
-            </div>
-
-            {/* Audio Active Indicator Badge */}
-            <div className="absolute -bottom-1 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-500 text-slate-950 font-bold text-[10px] shadow-lg border-2 border-slate-950">
-              <Mic className="w-3 h-3 text-slate-950 animate-pulse" />
-              <span>Audio Active</span>
-            </div>
-          </div>
-
-          {/* Participant Info */}
-          <h3 className="text-base sm:text-lg font-bold text-white tracking-tight">
-            {displayName}
-          </h3>
-
-          {/* Explanatory Message */}
-          <p className="mt-3 text-[11px] sm:text-xs text-slate-400 max-w-xs leading-relaxed">
-            Video was paused automatically to preserve clear, continuous audio. Video will resume as soon as the network stabilizes.
-          </p>
+      {/* 2. 240p Quality Badge (Video stays fully visible, resolution drops smoothly) */}
+      {is240pQuality && !isCameraOff && (
+        <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/90 border border-amber-400 text-slate-950 font-bold text-[10px] shadow-lg backdrop-blur-md">
+          <Wifi className="w-3 h-3 text-slate-950" />
+          <span>240p Low Bandwidth Mode</span>
         </div>
       )}
 
-      {showLabel && label && !isVideoHidden && (
+      {/* 3. Autoplay Unblock Button (If browser autoplay blocks remote audio) */}
+      {autoplayBlocked && !muted && (
+        <div className="absolute inset-x-4 top-4 z-30 flex justify-center">
+          <button
+            onClick={handleUnblockAudio}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand text-white text-xs font-semibold shadow-lift animate-bounce border border-white/20"
+          >
+            <Volume2 className="w-4 h-4" />
+            <span>Click to Enable Audio</span>
+          </button>
+        </div>
+      )}
+
+      {showLabel && label && !isCameraOff && (
         <div className="absolute bottom-2 left-2 text-[10px] bg-black/60 backdrop-blur-sm px-2 py-0.5 rounded-lg text-white/90 font-medium z-10">
           {label}
         </div>
