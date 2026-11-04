@@ -80,6 +80,14 @@ function DoctorConsoleContent({ id }: { id: string }) {
     targetPeerId: searchParams.get("patientPeerId") || undefined,
   });
 
+  // Keep targetPeerId synced with discovered patient if available
+  useEffect(() => {
+    const patientPeer = rtc.remotePeers.find((p) => p.role === "patient");
+    if (patientPeer && patientPeer.peerId) {
+      setTargetPeerId(patientPeer.peerId);
+    }
+  }, [rtc.remotePeers]);
+
   const patientName = patient?.name || "Ananya Sharma";
 
   // Request camera and mic on mount
@@ -227,7 +235,7 @@ function DoctorConsoleContent({ id }: { id: string }) {
       </header>
 
       {/* Manual Connect Banner (if disconnected or not connected yet) */}
-      {rtc.connectionState !== "connected" && (
+      {rtc.connectionState !== "connected" && rtc.remotePeers.length === 0 && (
         <div className="bg-slate-900 border-b border-slate-800 px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs shrink-0">
           <div className="flex items-center gap-2 text-slate-300">
             <Activity className="w-4 h-4 text-brand" />

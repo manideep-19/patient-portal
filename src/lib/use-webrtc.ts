@@ -196,6 +196,8 @@ export function useWebRTC(
   const mediaConnsRef = useRef<Map<string, MediaConnection>>(new Map());
   const dataConnsRef = useRef<Map<string, DataConnection>>(new Map());
   const remotePeersRef = useRef<Map<string, RemotePeer>>(new Map());
+  const pendingCallsRef = useRef<Set<string>>(new Set());
+  const isPeerInitRef = useRef(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
   const statsIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -561,7 +563,9 @@ export function useWebRTC(
 
     conn.on("close", () => {
       console.log(`[DataChannel] Closed with ${remoteId}`);
-      dataConnsRef.current.delete(remoteId);
+      if (dataConnsRef.current.get(remoteId) === conn) {
+        dataConnsRef.current.delete(remoteId);
+      }
     });
   }, []);
 
@@ -575,6 +579,7 @@ export function useWebRTC(
 
     call.on("stream", (stream) => {
       console.log(`[MediaConnection] Stream received from ${remoteId}`);
+      pendingCallsRef.current.delete(remoteId);
 
       const parts = remoteId.split("-");
       const peerRole: "patient" | "doctor" | "guest" =
@@ -620,17 +625,22 @@ export function useWebRTC(
 
     call.on("close", () => {
       console.log(`[MediaConnection] Call closed from ${remoteId}`);
-      mediaConnsRef.current.delete(remoteId);
-      remotePeersRef.current.delete(remoteId);
-      setRemotePeers(new Map(remotePeersRef.current));
+      pendingCallsRef.current.delete(remoteId);
+      // ONLY delete if this specific call instance is still the active one
+      if (mediaConnsRef.current.get(remoteId) === call) {
+        mediaConnsRef.current.delete(remoteId);
+        remotePeersRef.current.delete(remoteId);
+        setRemotePeers(new Map(remotePeersRef.current));
 
-      if (mediaConnsRef.current.size === 0) {
-        setConnectionState("waiting");
+        if (mediaConnsRef.current.size === 0) {
+          setConnectionState("waiting");
+        }
       }
     });
 
     call.on("error", (err) => {
       console.warn(`[MediaConnection Error ${remoteId}]`, err);
+      pendingCallsRef.current.delete(remoteId);
     });
   }, [startCallTimer, startNetworkMonitor]);
 
@@ -647,12 +657,25 @@ export function useWebRTC(
       const peer = peerRef.current;
       if (!peer || peer.destroyed) return;
 
+      // 1. Guard against duplicate connection attempts
       const existingCall = mediaConnsRef.current.get(targetPeerId);
-      if (existingCall && (existingCall as any).open) return;
+      if (existingCall) {
+        const pc = (existingCall as any).peerConnection as RTCPeerConnection | undefined;
+        if (pc && pc.connectionState !== "closed" && pc.connectionState !== "failed") {
+          return;
+        }
+      }
 
+      if (pendingCallsRef.current.has(targetPeerId)) {
+        return;
+      }
+
+      pendingCallsRef.current.add(targetPeerId);
       console.log(`[Mesh Calling] Initiating P2P connection to ${targetPeerId}...`);
 
-      if (targetDisplayName || targetRole) {
+      // 2. Only add placeholder if peer is not already tracked with a live stream
+      const existingPeer = remotePeersRef.current.get(targetPeerId);
+      if (!existingPeer) {
         remotePeersRef.current.set(targetPeerId, {
           peerId: targetPeerId,
           role: targetRole || "patient",
@@ -676,6 +699,7 @@ export function useWebRTC(
           }
         }
       } catch (err) {
+        pendingCallsRef.current.delete(targetPeerId);
         console.warn(`[PeerJS connectToPeer error ${targetPeerId}]`, err);
       }
     },
@@ -687,6 +711,10 @@ export function useWebRTC(
   /* ---------------------------------------------------------------- */
 
   const initPeer = useCallback(() => {
+    if (peerRef.current && !peerRef.current.destroyed) {
+      return peerRef.current;
+    }
+
     const myId = sessionPeerIdRef.current;
 
     const peer = new Peer(myId, {
@@ -720,6 +748,7 @@ export function useWebRTC(
         console.warn("[PeerJS] Peer ID collision; generating fresh unique ID...");
         sessionPeerIdRef.current = generateUniqueSessionId(roomId, role);
         peer.destroy();
+        peerRef.current = null;
         setTimeout(() => {
           initPeer();
         }, 600);
@@ -752,9 +781,31 @@ export function useWebRTC(
       }, 2000);
     });
 
-    // Answer incoming calls with local stream
+    // Answer incoming calls with local stream (with clean glare resolution)
     peer.on("call", (call) => {
-      console.log(`[PeerJS] Incoming call from ${call.peer}`);
+      const remoteId = call.peer;
+      console.log(`[PeerJS] Incoming call from ${remoteId}`);
+
+      const existingCall = mediaConnsRef.current.get(remoteId);
+      if (existingCall) {
+        const pc = (existingCall as any).peerConnection as RTCPeerConnection | undefined;
+        if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
+          console.log(`[PeerJS Glare] Healthy call with ${remoteId} already active. Ignoring duplicate offer.`);
+          return;
+        }
+
+        // Glare resolution: lexicographical peer comparison
+        if (sessionPeerIdRef.current > remoteId) {
+          console.log(`[PeerJS Glare] We are dominant caller (${sessionPeerIdRef.current} > ${remoteId}), ignoring incoming call.`);
+          return;
+        } else {
+          console.log(`[PeerJS Glare] Remote is dominant caller (${remoteId} > ${sessionPeerIdRef.current}), answering incoming call.`);
+          existingCall.close();
+          mediaConnsRef.current.delete(remoteId);
+          pendingCallsRef.current.delete(remoteId);
+        }
+      }
+
       setConnectionState("connecting");
       const currentStream = localStreamRef.current;
       if (currentStream) {
@@ -836,9 +887,20 @@ export function useWebRTC(
         }
 
         const existingCall = mediaConnsRef.current.get(remote.peerId);
-        const isCallOpen = existingCall && (existingCall as any).open;
+        let hasActiveCall = false;
+        if (existingCall) {
+          const pc = (existingCall as any).peerConnection as RTCPeerConnection | undefined;
+          if (pc && pc.connectionState !== "closed" && pc.connectionState !== "failed") {
+            hasActiveCall = true;
+          }
+        }
 
-        if (!isCallOpen && localStreamRef.current) {
+        if (pendingCallsRef.current.has(remote.peerId)) {
+          hasActiveCall = true;
+        }
+
+        if (!hasActiveCall && localStreamRef.current) {
+          // Strictly lexicographical caller rule so ONLY ONE peer initiates:
           if (myId > remote.peerId) {
             console.log(`[Mesh Glare Prevention] (MyID: ${myId} > PeerID: ${remote.peerId}) -> Calling remote peer.`);
             connectToPeer(remote.peerId, remote.role, remote.displayName);
@@ -846,9 +908,15 @@ export function useWebRTC(
         }
       }
 
-      remotePeersRef.current.forEach((_, pId) => {
+      // Cleanup peers: NEVER kill an actively streaming WebRTC connection just because of polling jitter!
+      remotePeersRef.current.forEach((peer, pId) => {
         if (!activePeerIds.has(pId)) {
           const call = mediaConnsRef.current.get(pId);
+          const pc = (call as any)?.peerConnection as RTCPeerConnection | undefined;
+          if (pc && (pc.connectionState === "connected" || pc.iceConnectionState === "connected")) {
+            // Keep active video streaming!
+            return;
+          }
           if (call) call.close();
           const conn = dataConnsRef.current.get(pId);
           if (conn) conn.close();
@@ -1184,13 +1252,17 @@ export function useWebRTC(
 
   useEffect(() => {
     if (!localStreamRef.current) return;
-    initPeer();
+    if (!isPeerInitRef.current) {
+      isPeerInitRef.current = true;
+      initPeer();
+    }
+  }, [localStream, initPeer]);
 
+  useEffect(() => {
     return () => {
       disconnect();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [localStream]);
+  }, [disconnect]);
 
   useEffect(() => {
     return () => {

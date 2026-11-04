@@ -21,13 +21,13 @@ if (!globalRoomStore.__telehealth_rooms) {
 
 const rooms = globalRoomStore.__telehealth_rooms;
 
-// Cleanup peers that haven't sent a heartbeat in over 15 seconds
+// Cleanup peers that haven't sent a heartbeat in over 35 seconds
 function cleanupStalePeers(roomId: string) {
   const room = rooms.get(roomId);
   if (!room) return;
   const now = Date.now();
   for (const [peerId, peer] of room.entries()) {
-    if (now - peer.lastSeen > 15000) {
+    if (now - peer.lastSeen > 35000) {
       room.delete(peerId);
     }
   }
