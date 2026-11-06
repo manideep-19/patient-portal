@@ -11,6 +11,7 @@ import {
   MonitorUp,
   MonitorOff,
   MessageSquare,
+  SlidersHorizontal,
   UserPlus,
   Users,
 } from "lucide-react";
@@ -29,6 +30,7 @@ interface CallControlsProps {
   onToggleChat: () => void;
   onToggleParticipants?: () => void;
   onSwitchCamera: () => void;
+  onOpenDeviceSettings?: () => void;
   onInvite?: () => void;
   onEndCall: () => void;
 }
@@ -47,6 +49,7 @@ export function CallControls({
   onToggleChat,
   onToggleParticipants,
   onSwitchCamera,
+  onOpenDeviceSettings,
   onInvite,
   onEndCall,
 }: CallControlsProps) {
@@ -101,14 +104,25 @@ export function CallControls({
           activeClass="bg-amber-400 text-ink shadow-soft"
         />
 
-        {/* Switch Camera */}
+        {/* Switch Camera (Front <-> Rear) */}
         <ControlButton
           active={false}
           icon={<SwitchCamera className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-white/90" />}
           label="Switch Camera"
-          title="Switch Camera (Front/Rear)"
+          title="Switch Camera (Front/Rear/Next Device)"
           onClick={onSwitchCamera}
         />
+
+        {/* Audio & Video Settings (Device Selector) */}
+        {onOpenDeviceSettings && (
+          <ControlButton
+            active={false}
+            icon={<SlidersHorizontal className="w-4.5 h-4.5 sm:w-5 sm:h-5 text-white/90" />}
+            label="Audio & Video Settings"
+            title="Audio & Video Settings (Select Mic or Camera)"
+            onClick={onOpenDeviceSettings}
+          />
+        )}
 
         {/* Invite / Add People */}
         {onInvite && (
@@ -198,10 +212,10 @@ function ControlButton({
     <button
       onClick={onClick}
       title={title || label}
-      className={`w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 ${
+      className={`relative w-10 h-10 sm:w-12 sm:h-12 rounded-full flex items-center justify-center transition-all cursor-pointer shrink-0 active:scale-95 ${
         active
           ? activeClass
-          : "bg-white/15 text-white hover:bg-white/25 active:scale-95 border border-white/10"
+          : "bg-white/15 text-white hover:bg-white/25 border border-white/10"
       }`}
       aria-label={label}
     >

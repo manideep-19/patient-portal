@@ -43,6 +43,7 @@ import { ChatPanel } from "@/components/telehealth/chat-panel";
 import { ParticipantsDrawer } from "@/components/telehealth/participants-drawer";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
 import { StartCallModal } from "@/components/telehealth/start-call-modal";
+import { DeviceSettingsModal } from "@/components/telehealth/device-settings-modal";
 
 interface PageProps {
   params: Promise<{ id: string }>;
@@ -83,6 +84,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isShareModalOpen, setIsShareModalOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [isDeviceSettingsOpen, setIsDeviceSettingsOpen] = useState(false);
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const [latestDoctorMessage, setLatestDoctorMessage] = useState<ChatMessage | null>(null);
   const prevMessagesCountRef = useRef(0);
@@ -660,6 +662,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
           }}
           onToggleParticipants={() => setIsParticipantsOpen((prev) => !prev)}
           onSwitchCamera={handleSwitchCamera}
+          onOpenDeviceSettings={() => setIsDeviceSettingsOpen(true)}
           onInvite={() => setIsInviteModalOpen(true)}
           onEndCall={() => setShowEndConfirm(true)}
         />
@@ -719,6 +722,16 @@ export default function TelehealthRoomPage({ params }: PageProps) {
           </div>
         </div>
       )}
+      {/* 11. Device Settings Modal */}
+      <DeviceSettingsModal
+        isOpen={isDeviceSettingsOpen}
+        onClose={() => setIsDeviceSettingsOpen(false)}
+        availableDevices={rtc.availableDevices}
+        currentAudioDeviceId={rtc.currentAudioDeviceId}
+        currentVideoDeviceId={rtc.currentVideoDeviceId}
+        onSelectMicrophone={rtc.switchMicrophone}
+        onSelectCamera={rtc.switchCamera}
+      />
     </div>
   );
 }

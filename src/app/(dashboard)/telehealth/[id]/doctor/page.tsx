@@ -28,6 +28,8 @@ import {
   ExternalLink,
   UserPlus,
   Share2,
+  SwitchCamera,
+  SlidersHorizontal,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Avatar } from "@/components/ui/avatar";
@@ -37,6 +39,7 @@ import { useWebRTC, type ParticipantRole } from "@/lib/use-webrtc";
 import { VideoGrid } from "@/components/telehealth/video-grid";
 import { ParticipantsDrawer } from "@/components/telehealth/participants-drawer";
 import { InviteModal } from "@/components/telehealth/invite-modal";
+import { DeviceSettingsModal } from "@/components/telehealth/device-settings-modal";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
 import { usePatient } from "@/context/patient-context";
 
@@ -67,6 +70,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
   const [showEndConfirm, setShowEndConfirm] = useState(false);
   const [isParticipantsOpen, setIsParticipantsOpen] = useState(false);
   const [isInviteModalOpen, setIsInviteModalOpen] = useState(false);
+  const [isDeviceSettingsOpen, setIsDeviceSettingsOpen] = useState(false);
 
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
@@ -335,6 +339,24 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
                 title="Share Medical Report / Screen"
               >
                 <MonitorUp className="w-4 h-4" />
+              </button>
+
+              {/* Switch Camera */}
+              <button
+                onClick={() => rtc.switchCamera()}
+                className="p-3 rounded-full bg-slate-800 text-slate-200 hover:bg-slate-700 transition-colors cursor-pointer"
+                title="Switch Camera (Front/Rear/Next Device)"
+              >
+                <SwitchCamera className="w-4 h-4" />
+              </button>
+
+              {/* Audio & Video Device Settings */}
+              <button
+                onClick={() => setIsDeviceSettingsOpen(true)}
+                className="p-3 rounded-full bg-slate-800 text-slate-200 hover:bg-slate-700 transition-colors cursor-pointer"
+                title="Audio & Video Settings (Select Mic or Camera)"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
               </button>
             </div>
 
@@ -637,6 +659,16 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
           </div>
         </div>
       )}
+      {/* Device Settings Modal */}
+      <DeviceSettingsModal
+        isOpen={isDeviceSettingsOpen}
+        onClose={() => setIsDeviceSettingsOpen(false)}
+        availableDevices={rtc.availableDevices}
+        currentAudioDeviceId={rtc.currentAudioDeviceId}
+        currentVideoDeviceId={rtc.currentVideoDeviceId}
+        onSelectMicrophone={rtc.switchMicrophone}
+        onSelectCamera={rtc.switchCamera}
+      />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useEffect, useState, useCallback } from "react";
-import { Mic, WifiOff, VideoOff, VolumeX, Volume2 } from "lucide-react";
+import { Mic, WifiOff, VideoOff, Volume2, Wifi } from "lucide-react";
 
 interface VideoPlayerProps {
   stream: MediaStream | null;
@@ -12,6 +12,7 @@ interface VideoPlayerProps {
   showLabel?: boolean;
   objectFit?: "cover" | "contain";
   isCamOff?: boolean;
+  is240pQuality?: boolean;
   onRetry?: () => void;
   onClick?: () => void;
   // WhatsApp-style Audio-Only fallback props:
@@ -53,6 +54,7 @@ export function VideoPlayer({
   showLabel = true,
   objectFit = "cover",
   isCamOff = false,
+  is240pQuality = false,
   onRetry,
   onClick,
   isAudioOnlyFallback = false,
@@ -61,7 +63,7 @@ export function VideoPlayer({
   fallbackRole,
 }: VideoPlayerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [needUnmute, setNeedUnmute] = useState(false);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
   const [isTrackMuted, setIsTrackMuted] = useState(false);
 
   // Monitor underlying WebRTC track mute state
@@ -99,30 +101,33 @@ export function VideoPlayer({
     const video = videoRef.current;
     if (!video) return;
 
+    // Set muted property directly on DOM element
+    video.muted = muted;
+
     const playPromise = video.play();
     if (playPromise !== undefined) {
       playPromise
         .then(() => {
-          // Playback started
+          setAutoplayBlocked(false);
         })
         .catch((err) => {
-          console.warn("[VideoPlayer] Autoplay blocked audio:", err.message);
-          if (!video.muted) {
-            video.muted = true;
-            setNeedUnmute(true);
-            video.play().catch(() => {});
+          console.warn("[VideoPlayer] Autoplay blocked by browser:", err.message);
+          if (!muted) {
+            setAutoplayBlocked(true);
           }
         });
     }
-  }, []);
+  }, [muted]);
 
-  const handleUserUnmute = useCallback(() => {
+  const handleUnblockAudio = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
-    video.muted = muted;
-    setNeedUnmute(false);
-    video.play().catch(() => {});
-  }, [muted]);
+    video.muted = false;
+    video
+      .play()
+      .then(() => setAutoplayBlocked(false))
+      .catch((e) => console.warn("Failed to unblock audio", e));
+  }, []);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -134,11 +139,28 @@ export function VideoPlayer({
 
     safePlay();
 
-    const handleCanPlay = () => safePlay();
-    video.addEventListener("canplay", handleCanPlay);
+    // Auto-resume audio when remote audio track un-mutes
+    const audioTrack = stream?.getAudioTracks()[0];
+    if (audioTrack) {
+      const handleAudioUnmute = () => {
+        safePlay();
+      };
+      audioTrack.addEventListener("unmute", handleAudioUnmute);
+      return () => {
+        audioTrack.removeEventListener("unmute", handleAudioUnmute);
+      };
+    }
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        safePlay();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
-      video.removeEventListener("canplay", handleCanPlay);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [stream, safePlay]);
 
@@ -193,7 +215,15 @@ export function VideoPlayer({
         </div>
       )}
 
-      {/* 2. WhatsApp-Style Low-Bandwidth Audio-Only Overlay (When Network Degrades) */}
+      {/* 2. 240p Quality Badge (Video stays fully visible, resolution drops smoothly) */}
+      {is240pQuality && !isCameraOff && !isAudioOnlyFallback && (
+        <div className="absolute top-3 left-3 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/90 border border-amber-400 text-slate-950 font-bold text-[10px] shadow-lg backdrop-blur-md">
+          <Wifi className="w-3 h-3 text-slate-950" />
+          <span>240p Low Bandwidth Mode</span>
+        </div>
+      )}
+
+      {/* 3. WhatsApp-Style Low-Bandwidth Audio-Only Overlay (When Network Degrades) */}
       {isAudioOnlyFallback && (
         <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-gradient-to-b from-slate-950 via-slate-900 to-black p-6 text-center select-none animate-in fade-in duration-300">
           <div className="absolute top-4 left-1/2 -translate-x-1/2 flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-amber-500/20 border border-amber-500/40 text-amber-200 text-xs shadow-xl backdrop-blur-md">
@@ -235,18 +265,20 @@ export function VideoPlayer({
         </div>
       )}
 
-      {/* Autoplay blocked banner - Tap to enable audio */}
-      {needUnmute && (
-        <button
-          onClick={(e) => {
-            e.stopPropagation();
-            handleUserUnmute();
-          }}
-          className="absolute inset-x-4 top-4 z-20 mx-auto max-w-xs px-3 py-2 rounded-2xl bg-brand text-white text-xs font-semibold flex items-center justify-center gap-2 shadow-2xl animate-bounce border border-white/20 cursor-pointer pointer-events-auto"
-        >
-          <Volume2 className="w-4 h-4" />
-          <span>Tap to enable sound</span>
-        </button>
+      {/* 4. Autoplay Unblock Button (If browser autoplay blocks remote audio) */}
+      {autoplayBlocked && !muted && (
+        <div className="absolute inset-x-4 top-4 z-30 flex justify-center">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              handleUnblockAudio();
+            }}
+            className="flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-brand text-white text-xs font-semibold shadow-lift animate-bounce border border-white/20 cursor-pointer pointer-events-auto"
+          >
+            <Volume2 className="w-4 h-4" />
+            <span>Click to Enable Audio</span>
+          </button>
+        </div>
       )}
 
       {/* Name Label */}
