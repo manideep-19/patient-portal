@@ -16,8 +16,10 @@ interface DeviceSettingsModalProps {
   availableDevices: DeviceInfo[];
   currentAudioDeviceId: string | null;
   currentVideoDeviceId: string | null;
+  currentOutputDeviceId?: string | null;
   onSelectMicrophone: (deviceId: string) => Promise<void>;
   onSelectCamera: (deviceId: string) => Promise<void>;
+  onSelectSpeaker?: (deviceId: string) => Promise<void>;
 }
 
 export function DeviceSettingsModal({
@@ -26,8 +28,10 @@ export function DeviceSettingsModal({
   availableDevices,
   currentAudioDeviceId,
   currentVideoDeviceId,
+  currentOutputDeviceId,
   onSelectMicrophone,
   onSelectCamera,
+  onSelectSpeaker,
 }: DeviceSettingsModalProps) {
   const [selectedMic, setSelectedMic] = useState<string>(currentAudioDeviceId || "");
   const [selectedCam, setSelectedCam] = useState<string>(currentVideoDeviceId || "");
@@ -42,6 +46,12 @@ export function DeviceSettingsModal({
 
   const audioDevices = availableDevices.filter((d) => d.kind === "audioinput");
   const videoDevices = availableDevices.filter((d) => d.kind === "videoinput");
+  // Speaker selection needs HTMLMediaElement.setSinkId (Chrome / Edge / Firefox)
+  const supportsSinkId =
+    typeof window !== "undefined" && "setSinkId" in HTMLMediaElement.prototype;
+  const outputDevices = supportsSinkId
+    ? availableDevices.filter((d) => d.kind === "audiooutput")
+    : [];
 
   const handleMicChange = async (deviceId: string) => {
     setSelectedMic(deviceId);
@@ -148,6 +158,37 @@ export function DeviceSettingsModal({
             )}
           </div>
         </div>
+
+        {/* Speaker Selection */}
+        {onSelectSpeaker && outputDevices.length > 0 && (
+          <div className="space-y-2">
+            <label className="text-xs font-semibold text-slate-300 flex items-center gap-2">
+              <Volume2 className="w-4 h-4 text-sky-400" />
+              <span>Speaker (Audio Output)</span>
+            </label>
+            <div className="space-y-1.5 max-h-36 overflow-y-auto pr-1">
+              {outputDevices.map((dev) => {
+                const isSelected =
+                  currentOutputDeviceId === dev.deviceId ||
+                  (!currentOutputDeviceId && dev === outputDevices[0]);
+                return (
+                  <button
+                    key={dev.deviceId}
+                    onClick={() => onSelectSpeaker(dev.deviceId)}
+                    className={`w-full text-left px-3 py-2.5 rounded-xl text-xs flex items-center justify-between transition-colors cursor-pointer border ${
+                      isSelected
+                        ? "bg-brand/20 border-brand/50 text-white font-medium"
+                        : "bg-slate-950/60 border-slate-800 text-slate-300 hover:bg-slate-800/60"
+                    }`}
+                  >
+                    <span className="truncate pr-2">{dev.label || "Speaker"}</span>
+                    {isSelected && <Check className="w-4 h-4 text-brand shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
 
         {/* Footer */}
         <div className="pt-2 flex justify-end">

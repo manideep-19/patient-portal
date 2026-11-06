@@ -1,16 +1,9 @@
 "use client";
 
-import React, { useState } from "react";
-import { VideoPlayer } from "./video-player";
-import {
-  VideoOff,
-  Mic,
-  MicOff,
-  Pin,
-  PinOff,
-  Grid,
-} from "lucide-react";
-import type { RemoteParticipant, ParticipantRole } from "@/lib/use-webrtc";
+import React, { useEffect, useRef, useState } from "react";
+import { Loader2, MicOff, Pin, PinOff, Grid, MonitorUp, Volume2, WifiOff } from "lucide-react";
+import type { RemoteParticipant, ParticipantRole, PeerConnectionStatus } from "@/lib/use-webrtc";
+import { useAudioActivity } from "@/lib/use-audio-activity";
 
 interface VideoGridProps {
   localStream: MediaStream | null;
@@ -25,13 +18,17 @@ interface VideoGridProps {
   isLocalScreenSharing?: boolean;
   remotePeers?: RemoteParticipant[];
   remoteParticipants?: RemoteParticipant[];
+  /** Speaker / headphones device for remote audio (setSinkId) */
+  outputDeviceId?: string | null;
+  /** Controls dock floats over the grid (default true) — reserve space for it */
+  overlayControls?: boolean;
   /** Called when user taps the Reconnect button */
   onRetry?: () => void;
   className?: string;
   emptyStateAction?: React.ReactNode;
 }
 
-interface ParticipantTileData {
+interface TileData {
   id: string;
   name: string;
   role?: ParticipantRole;
@@ -39,81 +36,296 @@ interface ParticipantTileData {
   isCamOff: boolean;
   isMicMuted: boolean;
   isSelf: boolean;
-  mirror?: boolean;
+  isScreenSharing: boolean;
+  mirror: boolean;
+  status: PeerConnectionStatus;
 }
 
-/**
- * Extracts initials for the Google Meet / Zoom style camera-off avatar
- */
+/* ------------------------------------------------------------------ */
+/*  Helpers                                                            */
+/* ------------------------------------------------------------------ */
+
 function getInitials(name: string): string {
-  const clean = name.replace(/\(.*?\)/g, "").trim();
+  const clean = name.replace(/\(.*?\)/g, "").replace(/^(Dr\.?|Mr\.?|Mrs\.?|Ms\.?)\s+/i, "").trim();
   const parts = clean.split(" ").filter(Boolean);
   if (parts.length === 0) return "U";
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
-  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+  if (parts.length === 1) return parts[0]!.slice(0, 2).toUpperCase();
+  return (parts[0]![0]! + parts[parts.length - 1]![0]!).toUpperCase();
 }
 
-/**
- * Dynamic background gradient for avatars based on name hash (like Google Meet)
- */
-function getAvatarGradient(name: string): string {
+function getAvatarColor(name: string): string {
   let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = name.charCodeAt(i) + ((hash << 5) - hash);
-  }
-  const gradients = [
-    "from-blue-600 via-indigo-600 to-purple-700",
-    "from-emerald-600 via-teal-600 to-cyan-700",
-    "from-rose-600 via-pink-600 to-amber-700",
-    "from-violet-600 via-purple-600 to-fuchsia-700",
-    "from-amber-600 via-orange-600 to-red-700",
+  for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+  const colors = [
+    "bg-blue-600",
+    "bg-emerald-600",
+    "bg-rose-600",
+    "bg-violet-600",
+    "bg-amber-600",
+    "bg-cyan-600",
   ];
-  return gradients[Math.abs(hash) % gradients.length];
+  return colors[Math.abs(hash) % colors.length]!;
 }
 
-function getRoleBadge(role?: ParticipantRole) {
-  if (!role) return null;
+function roleLabel(role?: ParticipantRole): string | null {
   switch (role) {
     case "doctor":
-      return (
-        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-500/25 text-emerald-300 border border-emerald-500/40">
-          Doctor
-        </span>
-      );
+      return "Doctor";
     case "family":
-      return (
-        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-violet-500/25 text-violet-300 border border-violet-500/40">
-          Family / Spouse
-        </span>
-      );
+      return "Family";
     case "coordinator":
-      return (
-        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/25 text-amber-300 border border-amber-500/40">
-          Care Team
-        </span>
-      );
+      return "Care Team";
     case "patient":
+      return "Patient";
     default:
-      return (
-        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-brand/30 text-brand-soft border border-brand/40">
-          Patient
-        </span>
-      );
+      return null;
   }
 }
 
+/** True while the stream has a live video track that is actually receiving frames. */
+function useVideoFlowing(stream: MediaStream | null): boolean {
+  const [, force] = useState(0);
+  useEffect(() => {
+    if (!stream) return;
+    const rerender = () => force((n) => n + 1);
+    const bind = (t: MediaStreamTrack) => {
+      t.addEventListener("mute", rerender);
+      t.addEventListener("unmute", rerender);
+      t.addEventListener("ended", rerender);
+    };
+    stream.getVideoTracks().forEach(bind);
+    const onAdd = (e: MediaStreamTrackEvent) => {
+      bind(e.track);
+      rerender();
+    };
+    stream.addEventListener("addtrack", onAdd);
+    stream.addEventListener("removetrack", rerender);
+    return () => {
+      stream.getVideoTracks().forEach((t) => {
+        t.removeEventListener("mute", rerender);
+        t.removeEventListener("unmute", rerender);
+        t.removeEventListener("ended", rerender);
+      });
+      stream.removeEventListener("addtrack", onAdd);
+      stream.removeEventListener("removetrack", rerender);
+    };
+  }, [stream]);
+  return !!stream?.getVideoTracks().some((t) => t.readyState === "live" && !t.muted);
+}
+
+/* ------------------------------------------------------------------ */
+/*  Remote audio — independent from video so camera-off never mutes   */
+/* ------------------------------------------------------------------ */
+
+function RemoteAudio({
+  stream,
+  sinkId,
+  unlockKey,
+  onBlocked,
+}: {
+  stream: MediaStream;
+  sinkId?: string | null;
+  unlockKey: number;
+  onBlocked: (blocked: boolean) => void;
+}) {
+  const ref = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    const play = () =>
+      el
+        .play()
+        .then(() => onBlocked(false))
+        .catch((err: Error) => {
+          if (err.name === "NotAllowedError") onBlocked(true);
+        });
+    play();
+    const onTrack = () => play();
+    stream.addEventListener("addtrack", onTrack);
+    stream.getAudioTracks().forEach((t) => t.addEventListener("unmute", onTrack));
+    return () => {
+      stream.removeEventListener("addtrack", onTrack);
+      stream.getAudioTracks().forEach((t) => t.removeEventListener("unmute", onTrack));
+    };
+  }, [stream, unlockKey, onBlocked]);
+
+  useEffect(() => {
+    const el = ref.current as (HTMLAudioElement & { setSinkId?: (id: string) => Promise<void> }) | null;
+    if (el && sinkId && typeof el.setSinkId === "function") {
+      el.setSinkId(sinkId).catch(() => {});
+    }
+  }, [sinkId]);
+
+  return <audio ref={ref} autoPlay playsInline className="hidden" />;
+}
+
+/* ------------------------------------------------------------------ */
+/*  Video element (always muted — audio is played by RemoteAudio)     */
+/* ------------------------------------------------------------------ */
+
+function TileVideo({
+  stream,
+  mirror,
+  contain,
+}: {
+  stream: MediaStream;
+  mirror: boolean;
+  contain: boolean;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    if (el.srcObject !== stream) el.srcObject = stream;
+    el.play().catch(() => {});
+    const resume = () => {
+      if (document.visibilityState === "visible") el.play().catch(() => {});
+    };
+    document.addEventListener("visibilitychange", resume);
+    return () => document.removeEventListener("visibilitychange", resume);
+  }, [stream]);
+
+  return (
+    <video
+      ref={ref}
+      autoPlay
+      playsInline
+      muted
+      className={`absolute inset-0 w-full h-full ${contain ? "object-contain bg-black" : "object-cover"} ${
+        mirror ? "scale-x-[-1]" : ""
+      }`}
+    />
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Tile                                                               */
+/* ------------------------------------------------------------------ */
+
+function ParticipantTile({
+  participant,
+  isPinned,
+  onTogglePin,
+  size = "medium",
+}: {
+  participant: TileData;
+  isPinned: boolean;
+  onTogglePin: () => void;
+  size?: "compact" | "medium" | "large";
+}) {
+  const { name, role, stream, isCamOff, isMicMuted, isSelf, mirror, isScreenSharing, status } =
+    participant;
+  const speaking = useAudioActivity(stream, !isMicMuted);
+  const videoFlowing = useVideoFlowing(stream);
+  const showVideo = !!stream && videoFlowing && (isScreenSharing || !isCamOff);
+  const label = roleLabel(role);
+  const connecting = !isSelf && !stream && status !== "connected";
+
+  const avatarSize =
+    size === "large" ? "w-28 h-28 text-4xl" : size === "medium" ? "w-20 h-20 text-2xl" : "w-12 h-12 text-base";
+
+  return (
+    <div className="relative w-full h-full bg-[#3c4043] overflow-hidden rounded-[inherit] group select-none">
+      {showVideo ? (
+        <TileVideo stream={stream!} mirror={mirror && !isScreenSharing} contain={isScreenSharing} />
+      ) : (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div
+            className={`relative rounded-full ${getAvatarColor(name)} text-white font-medium flex items-center justify-center ${avatarSize}`}
+          >
+            {speaking && (
+              <span className="absolute -inset-2 rounded-full border-4 border-sky-400/70 animate-pulse" />
+            )}
+            {getInitials(name)}
+          </div>
+        </div>
+      )}
+
+      {/* Connecting / reconnecting overlay */}
+      {connecting && (
+        <div className="absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 bg-black/50 text-white/90">
+          {status === "reconnecting" ? (
+            <WifiOff className="w-6 h-6 text-amber-300" />
+          ) : (
+            <Loader2 className="w-6 h-6 animate-spin" />
+          )}
+          <span className="text-xs font-medium">
+            {status === "reconnecting" ? "Reconnecting…" : "Connecting…"}
+          </span>
+        </div>
+      )}
+
+      {/* Active-speaker frame (Meet blue border) */}
+      <div
+        className={`pointer-events-none absolute inset-0 z-20 rounded-[inherit] transition-all duration-150 ${
+          speaking ? "ring-4 ring-inset ring-sky-400" : "ring-1 ring-inset ring-white/10"
+        }`}
+      />
+
+      {/* Presenting badge */}
+      {isScreenSharing && (
+        <div className="absolute top-2.5 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-black/70 text-white text-[11px] font-medium">
+          <MonitorUp className="w-3.5 h-3.5 text-sky-300" />
+          <span>{isSelf ? "You are presenting" : `${name} is presenting`}</span>
+        </div>
+      )}
+
+      {/* Name label (bottom-left) */}
+      <div className="absolute bottom-2 left-2 z-20 flex items-center gap-1.5 max-w-[85%] px-2 py-0.5 rounded-md bg-black/55 text-white">
+        <span className="text-xs font-medium truncate">{isSelf ? "You" : name}</span>
+        {label && size !== "compact" && (
+          <span className="text-[10px] text-white/70 shrink-0">· {label}</span>
+        )}
+      </div>
+
+      {/* Mic state (top-right) */}
+      <div className="absolute top-2 right-2 z-20">
+        {isMicMuted ? (
+          <div className="p-1.5 rounded-full bg-black/60 text-white" title="Muted">
+            <MicOff className="w-3.5 h-3.5" />
+          </div>
+        ) : speaking ? (
+          <div className="flex items-end gap-[2px] h-6 px-1.5 py-1 rounded-full bg-sky-500" title="Speaking">
+            <span className="w-[3px] bg-white rounded-full animate-[pulse_0.6s_ease-in-out_infinite] h-2" />
+            <span className="w-[3px] bg-white rounded-full animate-[pulse_0.6s_ease-in-out_0.15s_infinite] h-3.5" />
+            <span className="w-[3px] bg-white rounded-full animate-[pulse_0.6s_ease-in-out_0.3s_infinite] h-2" />
+          </div>
+        ) : null}
+      </div>
+
+      {/* Pin (hover) */}
+      <button
+        onClick={(e) => {
+          e.stopPropagation();
+          onTogglePin();
+        }}
+        className={`absolute top-2 left-2 z-20 p-1.5 rounded-full transition-opacity cursor-pointer ${
+          isPinned
+            ? "bg-sky-500 text-white opacity-100"
+            : "bg-black/60 text-white opacity-0 group-hover:opacity-100 focus:opacity-100"
+        }`}
+        title={isPinned ? "Unpin" : "Pin to main screen"}
+      >
+        {isPinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+      </button>
+    </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Grid                                                               */
+/* ------------------------------------------------------------------ */
+
 /**
- * Adaptive Multi-Party Video Grid (Google Meet & Zoom Style)
- *
- * Supports:
- * - 1 Person: Prominent tile + waiting card with invite actions
- * - 2 People: 2 equal side-by-side tiles (stacked on mobile)
- * - 3 People: Google Meet 2-top + 1-bottom centered layout
- * - 4+ People: 2x2 quad gallery grid
- * - Spotlight / Pin: Pin any participant to maximize them with side filmstrip
- * - Camera Off: Google Meet circular initials avatar with pulsing aura
- * - Live mic mute/unmute indicators on every tile
- * - Clinical role badges (Doctor, Patient, Spouse, Coordinator)
+ * Google Meet–style adaptive layout:
+ *  - alone: your tile + "waiting for others" card
+ *  - 2 people: the other person fills the stage, you are a floating self-view
+ *  - 3 people: 2 + 1 (stacked on phones)
+ *  - 4+: 2×2 / 3-col gallery
+ *  - someone presents → auto spotlight on the screen share with a filmstrip
+ *  - pin any tile to spotlight it
  */
 export function VideoGrid({
   localStream,
@@ -128,19 +340,23 @@ export function VideoGrid({
   isLocalScreenSharing = false,
   remotePeers,
   remoteParticipants,
-  onRetry,
+  outputDeviceId,
+  overlayControls = true,
   className = "",
   emptyStateAction,
 }: VideoGridProps) {
-  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  // undefined = automatic (follow presenter); null = user chose grid; string = pinned id
+  const [pinnedId, setPinnedId] = useState<string | null | undefined>(undefined);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [unlockKey, setUnlockKey] = useState(0);
+  const onBlocked = React.useCallback((b: boolean) => setAudioBlocked((prev) => (prev === b ? prev : b)), []);
 
   const selfName = localDisplayName || localLabel || "You";
-  const selfCamOff = isLocalCamOff !== undefined ? isLocalCamOff : localCamOff ?? false;
-  const selfMicMuted = isLocalMicMuted !== undefined ? isLocalMicMuted : localMicMuted ?? false;
-  const activeRemote = remoteParticipants || remotePeers || [];
+  const selfCamOff = isLocalCamOff ?? localCamOff ?? false;
+  const selfMicMuted = isLocalMicMuted ?? localMicMuted ?? false;
+  const remotes = remoteParticipants || remotePeers || [];
 
-  // Combine self + all active remote peers into unified list
-  const selfParticipant: ParticipantTileData = {
+  const self: TileData = {
     id: "self",
     name: selfName,
     role: localRole,
@@ -148,10 +364,12 @@ export function VideoGrid({
     isCamOff: selfCamOff,
     isMicMuted: selfMicMuted,
     isSelf: true,
-    mirror: localMirror && !isLocalScreenSharing,
+    isScreenSharing: isLocalScreenSharing,
+    mirror: localMirror,
+    status: "connected",
   };
 
-  const remoteTileData: ParticipantTileData[] = activeRemote.map((p) => ({
+  const others: TileData[] = remotes.map((p) => ({
     id: p.peerId,
     name: p.displayName,
     role: p.role,
@@ -159,310 +377,166 @@ export function VideoGrid({
     isCamOff: p.isCamOff ?? false,
     isMicMuted: p.isMicMuted ?? false,
     isSelf: false,
+    isScreenSharing: p.isScreenSharing ?? false,
     mirror: false,
+    status: p.connectionStatus ?? (p.stream ? "connected" : "connecting"),
   }));
 
-  const allParticipants = [selfParticipant, ...remoteTileData];
-  const total = allParticipants.length;
+  const all = [self, ...others];
+  const total = all.length;
+  const presenterId = others.find((p) => p.isScreenSharing)?.id ?? null;
 
-  // Toggle pin/spotlight
-  const handleTogglePin = (id: string) => {
-    setPinnedId((prev) => (prev === id ? null : id));
-  };
+  // A new presentation re-enables auto spotlight
+  useEffect(() => {
+    setPinnedId(undefined);
+  }, [presenterId]);
 
-  // If a pinned participant exists, show Spotlight View
-  if (pinnedId) {
-    const pinned = allParticipants.find((p) => p.id === pinnedId) || allParticipants[0];
-    const filmstrip = allParticipants.filter((p) => p.id !== pinned.id);
+  // Pinned participant left → back to auto
+  useEffect(() => {
+    if (pinnedId && !all.some((p) => p.id === pinnedId)) setPinnedId(undefined);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [total, pinnedId]);
 
+  const spotlightId = pinnedId === undefined ? presenterId : pinnedId;
+  const togglePin = (id: string) => setPinnedId((prev) => (prev === id ? null : id));
+
+  const audioLayer = (
+    <>
+      {remotes.map((p) =>
+        p.stream ? (
+          <RemoteAudio
+            key={`audio-${p.peerId}`}
+            stream={p.stream}
+            sinkId={outputDeviceId}
+            unlockKey={unlockKey}
+            onBlocked={onBlocked}
+          />
+        ) : null
+      )}
+      {audioBlocked && (
+        <div className="absolute top-20 inset-x-0 z-40 flex justify-center pointer-events-none">
+          <button
+            onClick={() => {
+              setUnlockKey((k) => k + 1);
+              setAudioBlocked(false);
+            }}
+            className="pointer-events-auto flex items-center gap-2 px-4 py-2 rounded-full bg-sky-500 text-white text-sm font-semibold shadow-2xl cursor-pointer"
+          >
+            <Volume2 className="w-4 h-4" />
+            <span>Click to hear other participants</span>
+          </button>
+        </div>
+      )}
+    </>
+  );
+
+  const dockPad = overlayControls ? "pb-24" : "";
+  const floatBottom = overlayControls ? "bottom-24 sm:bottom-28" : "bottom-4";
+  const tileShell = "relative min-h-0 min-w-0 rounded-xl sm:rounded-2xl overflow-hidden";
+
+  /* ---------- Spotlight (pinned or presenting) ---------- */
+  const spotlight = spotlightId ? all.find((p) => p.id === spotlightId) : undefined;
+  if (spotlight && total > 1) {
+    const strip = all.filter((p) => p.id !== spotlight.id);
     return (
-      <div
-        className={`relative w-full h-full bg-slate-950 p-2 sm:p-3 flex flex-col md:flex-row gap-2.5 overflow-hidden ${className}`}
-      >
-        {/* Main Stage (Pinned Participant) */}
-        <div className="flex-1 h-full min-h-0 min-w-0 relative rounded-2xl sm:rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-2xl">
+      <div className={`relative w-full h-full bg-[#202124] p-2 sm:p-3 ${dockPad} flex flex-col md:flex-row gap-2 ${className}`}>
+        <div className={`${tileShell} flex-1`}>
           <ParticipantTile
-            participant={pinned}
-            isPinned={true}
-            onTogglePin={() => handleTogglePin(pinned.id)}
-            onRetry={onRetry}
+            participant={spotlight}
+            isPinned={pinnedId === spotlight.id}
+            onTogglePin={() => togglePin(spotlight.id)}
             size="large"
           />
         </div>
+        <div className="flex md:flex-col gap-2 shrink-0 h-28 md:h-auto md:w-60 overflow-x-auto md:overflow-y-auto">
+          {strip.map((p) => (
+            <div key={p.id} className={`${tileShell} aspect-video h-full md:h-auto md:w-full shrink-0`}>
+              <ParticipantTile participant={p} isPinned={false} onTogglePin={() => togglePin(p.id)} size="compact" />
+            </div>
+          ))}
+        </div>
+        <button
+          onClick={() => setPinnedId(null)}
+          className="absolute top-4 left-4 z-30 px-3 py-1.5 rounded-full bg-black/70 hover:bg-black/90 text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
+        >
+          <Grid className="w-3.5 h-3.5" />
+          <span>Grid view</span>
+        </button>
+        {audioLayer}
+      </div>
+    );
+  }
 
-        {/* Filmstrip (Other Participants) */}
-        {filmstrip.length > 0 && (
-          <div className="w-full md:w-56 lg:w-64 shrink-0 flex md:flex-col gap-2.5 overflow-x-auto md:overflow-y-auto scrollbar-none h-32 md:h-full">
-            {filmstrip.map((p) => (
-              <div
-                key={p.id}
-                className="w-44 md:w-full aspect-video shrink-0 rounded-2xl overflow-hidden bg-slate-900 border border-white/10 shadow-lg relative group cursor-pointer"
-                onClick={() => setPinnedId(p.id)}
-              >
-                <ParticipantTile
-                  participant={p}
-                  isPinned={false}
-                  onTogglePin={() => handleTogglePin(p.id)}
-                  onRetry={onRetry}
-                  size="compact"
-                />
-              </div>
-            ))}
+  /* ---------- Alone ---------- */
+  if (total === 1) {
+    return (
+      <div className={`relative w-full h-full bg-[#202124] p-2 sm:p-4 flex items-center justify-center ${className}`}>
+        <div className={`${tileShell} w-full max-w-5xl aspect-video max-h-full`}>
+          <ParticipantTile participant={self} isPinned={false} onTogglePin={() => {}} size="large" />
+        </div>
+        <div className="absolute inset-x-4 ${floatBottom} sm:left-auto sm:right-6 sm:max-w-sm z-30 p-4 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 text-white shadow-2xl space-y-2">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
+            <span className="text-xs font-bold">You&apos;re the only one here</span>
           </div>
-        )}
-
-        {/* Top Header Badge */}
-        <div className="absolute top-4 left-4 z-20 flex items-center gap-2">
-          <button
-            onClick={() => setPinnedId(null)}
-            className="px-3 py-1.5 rounded-full bg-black/70 hover:bg-black/90 text-white text-xs font-semibold backdrop-blur-md border border-white/20 flex items-center gap-1.5 transition-all cursor-pointer shadow-lg"
-          >
-            <Grid className="w-3.5 h-3.5" />
-            <span>Switch to Grid View</span>
-          </button>
+          <p className="text-[11px] text-white/70 leading-relaxed">
+            Share the invite link with the doctor, family member or care team. They&apos;ll appear here as soon as they join.
+          </p>
+          {emptyStateAction && <div className="pt-1">{emptyStateAction}</div>}
         </div>
       </div>
     );
   }
 
-  // =================================================================
-  // EQUAL GRID LAYOUTS (Google Meet / Zoom style)
-  // =================================================================
-
-  return (
-    <div
-      className={`relative w-full h-full bg-slate-950 p-2 sm:p-3 overflow-hidden select-none ${className}`}
-    >
-      {/* 1 Participant: Centered prominent tile */}
-      {total === 1 && (
-        <div className="w-full h-full flex items-center justify-center p-2 relative">
-          <div className="w-full max-w-4xl aspect-video rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-2xl relative">
-            <ParticipantTile
-              participant={allParticipants[0]}
-              isPinned={false}
-              onTogglePin={() => handleTogglePin(allParticipants[0].id)}
-              onRetry={onRetry}
-              size="large"
-            />
-
-            {/* Waiting Card Overlay when alone */}
-            <div className="absolute inset-x-4 bottom-20 sm:bottom-6 sm:right-6 sm:left-auto sm:max-w-sm p-4 rounded-2xl bg-black/80 backdrop-blur-xl border border-white/15 text-white shadow-2xl space-y-2 pointer-events-auto z-20">
-              <div className="flex items-center gap-2">
-                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-ping" />
-                <span className="text-xs font-bold text-white">
-                  Waiting for Others to Join
-                </span>
-              </div>
-              <p className="text-[11px] text-white/70 leading-relaxed">
-                Your audio and camera are connected. You can invite the doctor,
-                spouse/family member, or clinical team to this room.
-              </p>
-              {emptyStateAction && <div className="pt-1">{emptyStateAction}</div>}
-            </div>
-          </div>
+  /* ---------- 1:1 — remote fills stage, self-view floats ---------- */
+  if (total === 2) {
+    const other = others[0]!;
+    return (
+      <div className={`relative w-full h-full bg-[#202124] p-2 sm:p-3 ${className}`}>
+        <div className={`${tileShell} w-full h-full`}>
+          <ParticipantTile participant={other} isPinned={false} onTogglePin={() => togglePin(other.id)} size="large" />
         </div>
-      )}
+        <div
+          className={`absolute z-30 right-4 ${floatBottom} w-32 sm:w-56 aspect-[3/4] sm:aspect-video rounded-xl overflow-hidden shadow-2xl border border-white/20`}
+        >
+          <ParticipantTile participant={self} isPinned={false} onTogglePin={() => togglePin("self")} size="compact" />
+        </div>
+        {audioLayer}
+      </div>
+    );
+  }
 
-      {/* 2 Participants: Side-by-side equal split (Google Meet standard) */}
-      {total === 2 && (
-        <div className="w-full h-full grid grid-cols-1 md:grid-cols-2 gap-2.5 sm:gap-3 p-1">
-          {allParticipants.map((p) => (
+  /* ---------- 3 people — 2 + 1 ---------- */
+  if (total === 3) {
+    return (
+      <div className={`relative w-full h-full bg-[#202124] p-2 sm:p-3 ${dockPad} ${className}`}>
+        <div className="w-full h-full grid gap-2 grid-cols-1 grid-rows-3 md:grid-cols-4 md:grid-rows-2">
+          {all.map((p, i) => (
             <div
               key={p.id}
-              className="w-full h-full min-h-0 rounded-2xl sm:rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-xl relative"
+              className={`${tileShell} md:col-span-2 ${i === 2 ? "md:col-start-2" : ""}`}
             >
-              <ParticipantTile
-                participant={p}
-                isPinned={false}
-                onTogglePin={() => handleTogglePin(p.id)}
-                onRetry={onRetry}
-                size="medium"
-              />
+              <ParticipantTile participant={p} isPinned={false} onTogglePin={() => togglePin(p.id)} size="medium" />
             </div>
           ))}
         </div>
-      )}
-
-      {/* 3 Participants: Google Meet 2-top + 1-bottom centered */}
-      {total === 3 && (
-        <div className="w-full h-full flex flex-col gap-2.5 sm:gap-3 p-1">
-          {/* Top row: 2 tiles */}
-          <div className="flex-1 grid grid-cols-2 gap-2.5 sm:gap-3 min-h-0">
-            {allParticipants.slice(0, 2).map((p) => (
-              <div
-                key={p.id}
-                className="w-full h-full min-h-0 rounded-2xl sm:rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-xl relative"
-              >
-                <ParticipantTile
-                  participant={p}
-                  isPinned={false}
-                  onTogglePin={() => handleTogglePin(p.id)}
-                  onRetry={onRetry}
-                  size="medium"
-                />
-              </div>
-            ))}
-          </div>
-
-          {/* Bottom row: 1 tile centered */}
-          <div className="flex-1 flex justify-center min-h-0">
-            <div className="w-full md:w-1/2 h-full min-h-0 rounded-2xl sm:rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-xl relative">
-              <ParticipantTile
-                participant={allParticipants[2]}
-                isPinned={false}
-                onTogglePin={() => handleTogglePin(allParticipants[2].id)}
-                onRetry={onRetry}
-                size="medium"
-              />
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* 4+ Participants: 2x2 Quad Grid (Zoom / Google Meet Grid) */}
-      {total >= 4 && (
-        <div className="w-full h-full grid grid-cols-2 grid-rows-2 gap-2.5 sm:gap-3 p-1">
-          {allParticipants.slice(0, 4).map((p) => (
-            <div
-              key={p.id}
-              className="w-full h-full min-h-0 rounded-2xl sm:rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-xl relative"
-            >
-              <ParticipantTile
-                participant={p}
-                isPinned={false}
-                onTogglePin={() => handleTogglePin(p.id)}
-                onRetry={onRetry}
-                size="compact"
-              />
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Active participant count floating badge in top-right */}
-      <div className="absolute top-4 right-4 z-20 flex items-center gap-2 pointer-events-none">
-        <div className="px-3 py-1 rounded-full bg-black/60 backdrop-blur-md border border-white/15 text-[11px] text-white/90 font-semibold flex items-center gap-1.5 shadow-lg">
-          <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span>{total} in call</span>
-        </div>
+        {audioLayer}
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-// =================================================================
-// PARTICIPANT TILE COMPONENT (Individual video / avatar card)
-// =================================================================
-
-function ParticipantTile({
-  participant,
-  isPinned,
-  onTogglePin,
-  onRetry,
-  size = "medium",
-}: {
-  participant: ParticipantTileData;
-  isPinned: boolean;
-  onTogglePin: () => void;
-  onRetry?: () => void;
-  size?: "compact" | "medium" | "large";
-}) {
-  const { name, role, stream, isCamOff, isMicMuted, isSelf, mirror } = participant;
-  const initials = getInitials(name);
-  const gradient = getAvatarGradient(name);
-
-  // Audio-reactive border
-  const borderRing = !isMicMuted
-    ? "ring-2 ring-emerald-500/70"
-    : "border border-white/10";
-
+  /* ---------- 4+ gallery ---------- */
+  const cols = total <= 4 ? "grid-cols-2" : "grid-cols-2 md:grid-cols-3";
   return (
-    <div
-      className={`relative w-full h-full bg-slate-900 overflow-hidden group select-none ${borderRing}`}
-    >
-      {/* 1. Video Player (when camera is on and stream exists) */}
-      {!isCamOff && stream ? (
-        <VideoPlayer
-          stream={stream}
-          muted={isSelf} // Self MUST be muted to prevent audio feedback
-          mirror={mirror}
-          className="w-full h-full"
-          label=""
-          showLabel={false}
-          objectFit="cover"
-          onRetry={onRetry}
-        />
-      ) : (
-        /* 2. Google Meet Camera-Off Avatar (Deep gradient aura + initials) */
-        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-4 text-center">
-          <div
-            className={`rounded-full bg-gradient-to-tr ${gradient} text-white font-bold flex items-center justify-center shadow-2xl ring-4 ring-white/10 animate-fade-in ${
-              size === "large"
-                ? "w-28 h-28 text-3xl"
-                : size === "medium"
-                ? "w-20 h-20 text-xl"
-                : "w-14 h-14 text-base"
-            }`}
-          >
-            {initials}
+    <div className={`relative w-full h-full bg-[#202124] p-2 sm:p-3 ${dockPad} ${className}`}>
+      <div className={`w-full h-full grid gap-2 ${cols} auto-rows-fr`}>
+        {all.map((p) => (
+          <div key={p.id} className={tileShell}>
+            <ParticipantTile participant={p} isPinned={false} onTogglePin={() => togglePin(p.id)} size="compact" />
           </div>
-          <div className="mt-3 text-xs sm:text-sm font-semibold text-slate-200 truncate max-w-[80%] flex items-center gap-1.5">
-            <span>{name}</span>
-          </div>
-          <div className="mt-0.5 text-[10px] text-slate-500 flex items-center gap-1">
-            <VideoOff className="w-3 h-3 text-slate-500" />
-            <span>Camera switched off</span>
-          </div>
-        </div>
-      )}
-
-      {/* 3. Name Pill Overlay & Role (Bottom Left) */}
-      <div className="absolute bottom-2.5 left-2.5 z-10 flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-black/75 backdrop-blur-md border border-white/10 text-white shadow-lg pointer-events-none max-w-[85%]">
-        <span
-          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
-            !isMicMuted ? "bg-emerald-400 animate-pulse" : "bg-slate-400"
-          }`}
-        />
-        <span className="text-[11px] sm:text-xs font-semibold truncate">
-          {isSelf ? "You" : name}
-        </span>
-        {getRoleBadge(role)}
+        ))}
       </div>
-
-      {/* 4. Mic Status Indicator (Top Right) */}
-      <div className="absolute top-2.5 right-2.5 z-10">
-        {isMicMuted ? (
-          <div
-            className="p-1.5 rounded-full bg-destructive/90 text-white backdrop-blur-md shadow-lg border border-destructive/40"
-            title="Microphone Muted"
-          >
-            <MicOff className="w-3.5 h-3.5" />
-          </div>
-        ) : (
-          <div
-            className="p-1.5 rounded-full bg-black/60 text-emerald-400 backdrop-blur-md shadow-lg border border-white/10"
-            title="Microphone Active"
-          >
-            <Mic className="w-3.5 h-3.5" />
-          </div>
-        )}
-      </div>
-
-      {/* 5. Pin / Spotlight Action (Hover on top-left) */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          onTogglePin();
-        }}
-        className={`absolute top-2.5 left-2.5 z-10 p-1.5 rounded-full backdrop-blur-md transition-all cursor-pointer opacity-0 group-hover:opacity-100 ${
-          isPinned
-            ? "bg-brand text-white opacity-100 shadow-lift"
-            : "bg-black/60 text-white/80 hover:bg-black/80 hover:text-white border border-white/10"
-        }`}
-        title={isPinned ? "Unpin participant" : "Pin participant to focus"}
-      >
-        {isPinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
-      </button>
+      {audioLayer}
     </div>
   );
 }

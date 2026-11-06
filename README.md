@@ -59,12 +59,36 @@ Open [http://localhost:3002](http://localhost:3002) in your browser.
 
 ---
 
-## 🧪 Testing Live 2-Way Video Calls
+## 🧪 Testing a 3-Person Call (Meet / Zoom style)
 
-1. Open [http://localhost:3002/home](http://localhost:3002/home) and click **"Start Call"**.
-2. Click **"Start Call Now (Join as Patient)"** (opens Tab 1).
-3. In the modal or top bar, click **"Launch Doctor Console"** or open the Doctor Link in Tab 2.
-4. Both tabs will automatically connect with live 2-way video, audio, screen share, and real-time chat.
+1. Patient: open `http://localhost:3002/telehealth/<room-id>` → camera preview → **Join**.
+2. Doctor: open `http://localhost:3002/telehealth/<room-id>/doctor` → camera preview → **Join now**.
+3. Family member: open `http://localhost:3002/telehealth/<room-id>?role=family&name=Vikram` — the lobby shows who is already in the call — then **Join**.
+
+Use three different browsers / devices (or one normal + incognito windows). Behaviour:
+mute & camera-off are shown on every tile, the active speaker gets a blue ring, a screen
+share is spotlighted automatically, and anyone who hangs up, closes the tab or loses
+the network disappears from the others' screens within a few seconds. People who join late
+see the chat so far, and a room is capped at 4 people (a 5th visitor sees "This call is full").
+
+### Production networking (important)
+
+Only STUN is configured by default, which works on most home/office networks. Users
+behind strict corporate firewalls or some mobile carriers need a **TURN relay** (Meet
+and Zoom always have one). Add to `.env.local`:
+
+```
+NEXT_PUBLIC_TURN_URL=turn:turn.example.com:3478,turns:turn.example.com:5349
+NEXT_PUBLIC_TURN_USERNAME=...
+NEXT_PUBLIC_TURN_CREDENTIAL=...
+# Optional: self-hosted PeerJS signaling instead of the public 0.peerjs.com cloud
+NEXT_PUBLIC_PEERJS_HOST=peer.example.com
+NEXT_PUBLIC_PEERJS_PORT=443
+NEXT_PUBLIC_PEERJS_PATH=/
+```
+
+Room presence (`/api/telehealth/rooms/[id]`) is kept in server memory, so run a single
+server instance or move it to Redis before deploying to serverless / multiple instances.
 
 ---
 

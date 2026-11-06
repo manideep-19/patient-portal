@@ -41,6 +41,7 @@ import { ParticipantsDrawer } from "@/components/telehealth/participants-drawer"
 import { InviteModal } from "@/components/telehealth/invite-modal";
 import { DeviceSettingsModal } from "@/components/telehealth/device-settings-modal";
 import { NetworkIndicator } from "@/components/telehealth/network-indicator";
+import { VideoPlayer } from "@/components/telehealth/video-player";
 import { usePatient } from "@/context/patient-context";
 
 interface PageProps {
@@ -79,6 +80,7 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
     role: "doctor",
     displayName: "Dr. Sunita Sharma",
     targetPeerId: searchParams.get("patientPeerId") || undefined,
+    autoJoin: false, // Meet-style green room first
   });
 
   const patientName = patient?.name || "Ananya Sharma";
@@ -88,6 +90,25 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
     rtc.startLocalMedia(true, true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Join / leave toasts (like Meet's "X joined")
+  const knownParticipantsRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (!rtc.hasJoined) return;
+    const current = new Map(rtc.remoteParticipants.map((p) => [p.peerId, p.displayName]));
+    current.forEach((name, id) => {
+      if (!knownParticipantsRef.current.has(id)) toast(`${name} joined`);
+    });
+    knownParticipantsRef.current.forEach((name, id) => {
+      if (!current.has(id)) toast(`${name} left the call`);
+    });
+    knownParticipantsRef.current = current;
+  }, [rtc.remoteParticipants, rtc.hasJoined]);
+
+  // Rejected because the call is full
+  useEffect(() => {
+    if (rtc.connectionState === "error" && rtc.error) toast.error(rtc.error);
+  }, [rtc.connectionState, rtc.error]);
 
   // Scroll chat to bottom
   useEffect(() => {
@@ -152,6 +173,123 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
         );
     }
   };
+
+
+  // -----------------------------------------------------------------
+  // PRE-JOIN (Meet-style green room for the doctor)
+  // -----------------------------------------------------------------
+  if (!rtc.hasJoined) {
+    const lobbyNames = rtc.lobbyPeers.map((p) => p.displayName);
+    const lobbyText = rtc.isRoomFull
+      ? "This call is full (4 people max)"
+      : lobbyNames.length === 0
+      ? "No one else is here yet"
+      : lobbyNames.length === 1
+      ? `${lobbyNames[0]} is waiting in this call`
+      : `${lobbyNames.slice(0, -1).join(", ")} and ${lobbyNames[lobbyNames.length - 1]} are waiting in this call`;
+
+    return (
+      <div className="min-h-screen bg-slate-950 text-white flex items-center justify-center p-4">
+        <div className="w-full max-w-4xl grid md:grid-cols-[1fr_320px] gap-6 items-center">
+          <div className="relative aspect-video rounded-3xl overflow-hidden bg-slate-900 border border-white/10">
+            {rtc.localStream && !rtc.isCamOff ? (
+              <VideoPlayer
+                stream={rtc.localStream}
+                muted
+                mirror
+                showLabel={false}
+                className="w-full h-full"
+              />
+            ) : (
+              <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/70 text-xs p-4 text-center">
+                <Avatar name="Dr. Sunita Sharma" size="xl" />
+                <span>
+                  {!rtc.isMediaReady
+                    ? "Starting camera and microphone..."
+                    : rtc.isCamOff
+                    ? "Camera is off"
+                    : "Camera unavailable"}
+                </span>
+              </div>
+            )}
+            {rtc.error && (
+              <div className="absolute top-3 inset-x-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/90 text-slate-950 text-[11px] font-semibold">
+                <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                <span className="flex-1">{rtc.error}</span>
+                {!rtc.localStream && (
+                  <button onClick={() => rtc.startLocalMedia(true, true)} className="underline cursor-pointer">
+                    Retry
+                  </button>
+                )}
+              </div>
+            )}
+            <div className="absolute bottom-3 inset-x-0 flex justify-center gap-3">
+              <button
+                onClick={rtc.toggleMic}
+                title={rtc.isMicMuted ? "Unmute" : "Mute"}
+                className={`p-3 rounded-full cursor-pointer ${rtc.isMicMuted ? "bg-red-600" : "bg-white/20 hover:bg-white/30"}`}
+              >
+                {rtc.isMicMuted ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={rtc.toggleCamera}
+                title={rtc.isCamOff ? "Turn camera on" : "Turn camera off"}
+                className={`p-3 rounded-full cursor-pointer ${rtc.isCamOff ? "bg-red-600" : "bg-white/20 hover:bg-white/30"}`}
+              >
+                {rtc.isCamOff ? <VideoOff className="w-4 h-4" /> : <Video className="w-4 h-4" />}
+              </button>
+              <button
+                onClick={() => setIsDeviceSettingsOpen(true)}
+                title="Audio & video settings"
+                className="p-3 rounded-full bg-white/20 hover:bg-white/30 cursor-pointer"
+              >
+                <SlidersHorizontal className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-4 text-center md:text-left">
+            <div>
+              <h1 className="text-xl font-bold">Ready to join?</h1>
+              <p className="text-xs text-slate-400 mt-1">
+                Consultation with {patientName} · Room{" "}
+                <code className="text-brand">{resolvedParams.id}</code>
+              </p>
+            </div>
+            <div className="flex items-center justify-center md:justify-start gap-2 text-xs text-slate-300">
+              <Users className="w-3.5 h-3.5 text-brand" />
+              <span>{lobbyText}</span>
+            </div>
+            <Button
+              variant="primary"
+              size="lg"
+              fullWidth
+              disabled={!rtc.isMediaReady || rtc.isRoomFull}
+              onClick={() => rtc.joinRoom()}
+              className="font-bold cursor-pointer"
+            >
+              {rtc.isMediaReady ? "Join now" : "Preparing media..."}
+            </Button>
+            <Link href="/appointments" className="block text-xs text-slate-400 hover:text-white">
+              Back to appointments
+            </Link>
+          </div>
+        </div>
+
+        <DeviceSettingsModal
+          isOpen={isDeviceSettingsOpen}
+          onClose={() => setIsDeviceSettingsOpen(false)}
+          availableDevices={rtc.availableDevices}
+          currentAudioDeviceId={rtc.currentAudioDeviceId}
+          currentVideoDeviceId={rtc.currentVideoDeviceId}
+          currentOutputDeviceId={rtc.currentOutputDeviceId}
+          onSelectMicrophone={rtc.switchMicrophone}
+          onSelectCamera={rtc.switchCamera}
+          onSelectSpeaker={rtc.switchSpeaker}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen w-full bg-slate-950 text-slate-100 flex flex-col overflow-hidden font-sans">
@@ -264,6 +402,8 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
               isLocalScreenSharing={rtc.isScreenSharing}
               remoteParticipants={rtc.remoteParticipants}
               remotePeers={rtc.remoteParticipants}
+              outputDeviceId={rtc.currentOutputDeviceId}
+              overlayControls={false}
               onRetry={rtc.restartConnection}
               className="w-full h-full"
               emptyStateAction={
@@ -666,8 +806,10 @@ export default function DoctorSimulatorPage({ params }: PageProps) {
         availableDevices={rtc.availableDevices}
         currentAudioDeviceId={rtc.currentAudioDeviceId}
         currentVideoDeviceId={rtc.currentVideoDeviceId}
+        currentOutputDeviceId={rtc.currentOutputDeviceId}
         onSelectMicrophone={rtc.switchMicrophone}
         onSelectCamera={rtc.switchCamera}
+        onSelectSpeaker={rtc.switchSpeaker}
       />
     </div>
   );

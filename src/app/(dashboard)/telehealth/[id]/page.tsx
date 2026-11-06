@@ -93,14 +93,15 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   const rtc = useWebRTC(resolvedParams.id, {
     role: roleParam,
     displayName,
+    autoJoin: false, // Meet-style lobby: nobody sees you until you press Join
   });
 
   const doctorName = appointment?.doctorName || "Dr. Sunita Sharma";
   const doctorAvatar = appointment?.doctorAvatar || undefined;
   const doctorSpecialty = appointment?.doctorSpecialty || "Senior Reproductive Endocrinologist";
 
-  const origin = typeof window !== "undefined" ? window.location.origin : "";
-  const doctorUrl = `${origin}/telehealth/${resolvedParams.id}/doctor`;
+  // Relative for rendering (identical on server and client → no hydration mismatch)
+  const doctorPath = `/telehealth/${resolvedParams.id}/doctor`;
 
   // Start camera and microphone on pre-join mount
   useEffect(() => {
@@ -108,14 +109,26 @@ export default function TelehealthRoomPage({ params }: PageProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Transition to in_call automatically when remote participants connect while in prejoin
+  // Rejected by the server (call full) → back to the lobby with the reason
   useEffect(() => {
-    if (rtc.remoteParticipants.length > 0 && pageState === "prejoin") {
-      setPageState("in_call");
-      toast.success("Joined Consultation", {
-        description: `${rtc.remoteParticipants[0]?.displayName || "Participant"} is in the room.`,
-      });
+    if (pageState === "in_call" && rtc.connectionState === "error") {
+      setPageState("prejoin");
+      if (rtc.error) toast.error(rtc.error);
     }
+  }, [pageState, rtc.connectionState, rtc.error]);
+
+  // Join / leave toasts for other participants (like Meet's "X joined")
+  const knownParticipantsRef = useRef<Map<string, string>>(new Map());
+  useEffect(() => {
+    if (pageState !== "in_call") return;
+    const current = new Map(rtc.remoteParticipants.map((p) => [p.peerId, p.displayName]));
+    current.forEach((name, id) => {
+      if (!knownParticipantsRef.current.has(id)) toast(`${name} joined`);
+    });
+    knownParticipantsRef.current.forEach((name, id) => {
+      if (!current.has(id)) toast(`${name} left the call`);
+    });
+    knownParticipantsRef.current = current;
   }, [rtc.remoteParticipants, pageState]);
 
   // Track unread chat messages & notifications
@@ -161,9 +174,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   // Pre-join join action
   const handleJoinCall = () => {
     setPageState("in_call");
-    toast.success("Joined Consultation Room", {
-      description: "Secure, HIPAA-compliant multi-party WebRTC mesh connected.",
-    });
+    rtc.joinRoom();
   };
 
   // End call
@@ -175,7 +186,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
 
   // Copy doctor link
   const handleCopyDoctorLink = () => {
-    navigator.clipboard.writeText(doctorUrl).then(() => {
+    navigator.clipboard.writeText(`${window.location.origin}${doctorPath}`).then(() => {
       toast.success("Doctor link copied!", {
         description: "Open in another tab to test doctor perspective.",
       });
@@ -207,8 +218,17 @@ export default function TelehealthRoomPage({ params }: PageProps) {
   // PRE-JOIN SCREEN
   // -----------------------------------------------------------------
   if (pageState === "prejoin") {
-    const isMediaReady =
-      rtc.connectionState !== "requesting_media" && rtc.localStream !== null;
+    const isMediaReady = rtc.isMediaReady;
+    const lobbyNames = rtc.lobbyPeers.map((p) => p.displayName);
+    const lobbyText = rtc.isRoomFull
+      ? "This call is full (4 people max)"
+      : lobbyNames.length === 0
+        ? "No one else is here yet"
+        : lobbyNames.length === 1
+        ? `${lobbyNames[0]} is in this call`
+        : lobbyNames.length === 2
+        ? `${lobbyNames[0]} and ${lobbyNames[1]} are in this call`
+        : `${lobbyNames[0]} and ${lobbyNames.length - 1} others are in this call`;
 
     return (
       <div className="min-h-screen bg-ink text-white flex flex-col justify-between p-4 sm:p-6 max-w-xl mx-auto">
@@ -261,7 +281,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
 
         {/* Camera Preview Tile */}
         <div className="relative aspect-video rounded-3xl overflow-hidden bg-slate-900 border border-white/10 shadow-lift flex items-center justify-center">
-          {rtc.error ? (
+          {rtc.error && !rtc.localStream ? (
             <div className="w-full h-full flex flex-col items-center justify-center gap-2 text-white/50 p-4 text-center">
               <AlertTriangle className="w-10 h-10 text-amber-400" />
               <span className="text-xs text-amber-300">{rtc.error}</span>
@@ -286,6 +306,13 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               <p className="text-xs text-white/70">
                 {rtc.isCamOff ? "Camera switched off" : "Requesting camera & microphone access..."}
               </p>
+            </div>
+          )}
+
+          {rtc.error && rtc.localStream && (
+            <div className="absolute top-3 inset-x-3 z-10 flex items-center gap-2 px-3 py-1.5 rounded-xl bg-amber-500/90 text-slate-950 text-[11px] font-semibold">
+              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+              <span>{rtc.error}</span>
             </div>
           )}
 
@@ -336,6 +363,12 @@ export default function TelehealthRoomPage({ params }: PageProps) {
             </div>
           </div>
 
+          {/* Who's already in the call (Meet lobby) */}
+          <div className="flex items-center justify-center gap-2 text-xs text-white/80">
+            <Users className="w-3.5 h-3.5 text-brand" />
+            <span>{lobbyText}</span>
+          </div>
+
           {/* Join button */}
           <div className="pt-1 space-y-2">
             <Button
@@ -343,7 +376,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               size="lg"
               fullWidth
               onClick={handleJoinCall}
-              disabled={!isMediaReady}
+              disabled={!isMediaReady || rtc.isRoomFull}
               className="text-sm font-bold shadow-soft flex items-center justify-center gap-2 cursor-pointer"
             >
               {!isMediaReady ? (
@@ -354,7 +387,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               ) : (
                 <>
                   <Video className="w-4 h-4" />
-                  <span>Join Consultation Room</span>
+                  <span>{lobbyNames.length > 0 ? "Join now" : "Join Consultation Room"}</span>
                 </>
               )}
             </Button>
@@ -362,7 +395,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
             {/* Quick 2-Way Demo Trigger */}
             <div className="pt-2 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs">
               <a
-                href={doctorUrl}
+                href={doctorPath}
                 target="_blank"
                 rel="noreferrer"
                 className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white font-medium transition-colors"
@@ -423,7 +456,7 @@ export default function TelehealthRoomPage({ params }: PageProps) {
               variant="outline"
               size="md"
               fullWidth
-              onClick={() => router.push("/dashboard")}
+              onClick={() => router.push("/home")}
               className="text-white border-white/20 hover:bg-white/10 cursor-pointer"
             >
               Return to Patient Portal
@@ -452,12 +485,13 @@ export default function TelehealthRoomPage({ params }: PageProps) {
           isLocalScreenSharing={rtc.isScreenSharing}
           remoteParticipants={rtc.remoteParticipants}
           remotePeers={rtc.remoteParticipants}
+          outputDeviceId={rtc.currentOutputDeviceId}
           onRetry={rtc.restartConnection}
           className="w-full h-full"
           emptyStateAction={
             <div className="flex flex-col sm:flex-row gap-2">
               <a
-                href={doctorUrl}
+                href={doctorPath}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand hover:bg-brand-dark text-xs text-white shadow-soft transition-colors"
@@ -729,8 +763,10 @@ export default function TelehealthRoomPage({ params }: PageProps) {
         availableDevices={rtc.availableDevices}
         currentAudioDeviceId={rtc.currentAudioDeviceId}
         currentVideoDeviceId={rtc.currentVideoDeviceId}
+        currentOutputDeviceId={rtc.currentOutputDeviceId}
         onSelectMicrophone={rtc.switchMicrophone}
         onSelectCamera={rtc.switchCamera}
+        onSelectSpeaker={rtc.switchSpeaker}
       />
     </div>
   );
